@@ -56,20 +56,22 @@ function Navigation({ user, onSignOut }) {
 
   return (
     <nav className="nav">
-      <Link to="/markets" className="nav-brand">DuMarket</Link>
+      <div style={{ width: '100%', textAlign: 'center' }}>
+        <Link to="/markets" className="nav-brand">DuMarket</Link>
+      </div>
 
-      <div className="nav-links">
+      <div style={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+        <span className="nav-balance">{user.balance?.toFixed(2)} DC</span>
+        <span className="text-muted">{user.display_name}</span>
+        <button onClick={onSignOut} className="btn btn-secondary btn-sm">Sign Out</button>
+      </div>
+
+      <div style={{ width: '100%', display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
         <Link to="/markets" className={`nav-link ${isActive('/markets') ? 'active' : ''}`}>Markets</Link>
         <Link to="/portfolio" className={`nav-link ${isActive('/portfolio') ? 'active' : ''}`}>Portfolio</Link>
         <Link to="/leaderboard" className={`nav-link ${isActive('/leaderboard') ? 'active' : ''}`}>Leaderboard</Link>
         <Link to="/achievements" className={`nav-link ${isActive('/achievements') ? 'active' : ''}`}>Achievements</Link>
         <Link to="/admin" className={`nav-link ${isActive('/admin') ? 'active' : ''}`}>🔧</Link>
-      </div>
-
-      <div className="nav-user">
-        <span className="nav-balance">{user.balance?.toFixed(2)} DC</span>
-        <span className="text-muted">{user.display_name}</span>
-        <button onClick={onSignOut} className="btn btn-secondary btn-sm">Sign Out</button>
       </div>
     </nav>
   );
