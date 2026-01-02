@@ -52,11 +52,6 @@ def on_startup():
             print(f"Market maker bot user already exists: {MarketMakerBot.USER_ID}")
     finally:
         db.close()
-    
-    # Initialize auth system
-    from auth import init_auth
-    init_auth()
-
 
 @app.get("/health")
 def health_check():

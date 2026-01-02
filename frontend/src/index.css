@@ -238,7 +238,6 @@ body {
 
 @media (max-width: 768px) {
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
-  .nav-links { display: none; }
 }
 
 /* Market card */
