@@ -21,13 +21,21 @@ function MarketDetailPage() {
       setMarket(data.market);
       setOrderBook(data.order_book);
       setRecentTrades(data.recent_trades);
-      const pos = await api.getPosition(marketId);
-      setPosition(pos);
+      
+      // Only load position if logged in
+      if (user) {
+        try {
+          const pos = await api.getPosition(marketId);
+          setPosition(pos);
+        } catch (e) {
+          // Ignore position errors for non-auth
+        }
+      }
     } catch (err) {
       setError(err.message);
     }
     setLoading(false);
-  }, [marketId]);
+  }, [marketId, user]);
 
   useEffect(() => {
     loadMarket();
@@ -41,7 +49,7 @@ function MarketDetailPage() {
   };
 
   const handleResolve = async (outcome) => {
-    if (!window.confirm(`Resolve this market as ${outcome ? 'YES' : 'NO'}?`)) return;
+    if (!window.confirm(`Resolve this market as ${outcome ? 'YES' : 'NO'}? This cannot be undone.`)) return;
     try {
       await api.resolveMarket(marketId, outcome);
       loadMarket();
@@ -59,224 +67,376 @@ function MarketDetailPage() {
     </div>
   );
 
-  const isCreator = market.creator_id === user?.id;
+  const isCreator = user && market.creator_id === user.id;
   const canResolve = isCreator && market.status === 'OPEN';
 
   return (
     <div>
-      <div className="mb-lg">
-        <div className="flex flex-between flex-center mb-sm">
-          <span className={`market-status market-status-${market.status.toLowerCase()}`}>{market.status}</span>
-          {canResolve && (
-            <div className="flex gap-sm">
-              <button onClick={() => handleResolve(true)} className="btn btn-success btn-sm">Resolve YES</button>
-              <button onClick={() => handleResolve(false)} className="btn btn-danger btn-sm">Resolve NO</button>
-            </div>
+      <div className="flex justify-between items-start mb-lg">
+        <div>
+          <span className={`market-status market-status-${market.status.toLowerCase()}`}>
+            {market.status}
+          </span>
+          <h1 style={{ marginTop: '0.5rem' }}>{market.question}</h1>
+          {market.description && (
+            <p className="text-muted mt-sm">{market.description}</p>
           )}
         </div>
-        <h1 style={{ fontSize: '1.5rem' }}>{market.question}</h1>
-        {market.description && <p className="text-muted mt-sm">{market.description}</p>}
+        {canResolve && (
+          <div className="flex gap-sm">
+            <button onClick={() => handleResolve(true)} className="btn btn-success btn-sm">
+              Resolve YES
+            </button>
+            <button onClick={() => handleResolve(false)} className="btn btn-danger btn-sm">
+              Resolve NO
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-2">
-        <div>
-          <OrderBookDisplay orderBook={orderBook} />
-          <div className="card mt-lg">
-            <h3 className="card-title mb-md">Recent Trades</h3>
-            {recentTrades.length === 0 ? <p className="text-muted">No trades yet</p> : (
-              <div>
-                {recentTrades.slice(0, 10).map((trade) => (
-                  <div key={trade.id} className="order-book-row">
-                    <span className={trade.side === 'YES' ? 'text-green' : 'text-red'}>{trade.side}</span>
-                    <span>{trade.quantity} @ {(trade.price * 100).toFixed(0)}¢</span>
-                  </div>
-                ))}
-              </div>
-            )}
+      {market.status === 'RESOLVED' && (
+        <div className="card mb-lg" style={{ 
+          borderColor: market.resolved_outcome ? 'var(--accent-green)' : 'var(--accent-red)',
+          background: market.resolved_outcome ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
+        }}>
+          <div className="text-center">
+            <div className="text-muted mb-sm">Resolved</div>
+            <div style={{ fontSize: '2rem', fontWeight: 700 }} className={market.resolved_outcome ? 'text-green' : 'text-red'}>
+              {market.resolved_outcome ? 'YES' : 'NO'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-2 mb-lg">
+        <div className="card">
+          <h3 className="card-title mb-md">Order Book</h3>
+          <div className="grid grid-2">
+            <OrderBookSide title="YES" book={orderBook?.yes} />
+            <OrderBookSide title="NO" book={orderBook?.no} />
           </div>
         </div>
 
-        <div>
-          {market.status === 'OPEN' ? (
-            <OrderForm marketId={marketId} orderBook={orderBook} onOrderPlaced={handleOrderPlaced} />
+        <div className="card">
+          <h3 className="card-title mb-md">Place Order</h3>
+          {user ? (
+            market.status === 'OPEN' ? (
+              <OrderForm
+                marketId={marketId}
+                orderBook={orderBook}
+                position={position}
+                userBalance={user.balance}
+                onOrderPlaced={handleOrderPlaced}
+              />
+            ) : (
+              <p className="text-muted text-center">Market is {market.status.toLowerCase()}</p>
+            )
           ) : (
-            <div className="card">
-              <p className="text-muted text-center">
-                {market.status === 'RESOLVED' ? `Market resolved: ${market.resolved_outcome ? 'YES' : 'NO'} won` : 'Market is closed for trading'}
-              </p>
+            <div className="text-center">
+              <p className="text-muted mb-md">Sign in to place orders</p>
+              <button onClick={() => navigate('/login')} className="btn btn-primary">
+                Sign In
+              </button>
             </div>
           )}
+        </div>
+      </div>
 
-          <div className="card mt-lg">
+      <div className="grid grid-2">
+        <div className="card">
+          <h3 className="card-title mb-md">Recent Trades</h3>
+          {recentTrades.length === 0 ? (
+            <p className="text-muted">No trades yet</p>
+          ) : (
+            <div>
+              {recentTrades.slice(0, 10).map((trade) => (
+                <div key={trade.id} className="flex justify-between py-sm" style={{ borderBottom: '1px solid var(--border-color)' }}>
+                  <span className={trade.side === 'YES' ? 'text-green' : 'text-red'}>
+                    {trade.side}
+                  </span>
+                  <span className="text-mono">
+                    {trade.quantity} @ {(trade.price * 100).toFixed(0)}¢
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {user && (
+          <div className="card">
             <h3 className="card-title mb-md">Your Position</h3>
             {position && (position.yes_shares > 0 || position.no_shares > 0) ? (
               <div>
                 {position.yes_shares > 0 && (
-                  <div className="position-card">
-                    <div><span className="text-green">YES</span><span className="text-mono"> {position.yes_shares} shares</span></div>
-                    <div><span className="text-muted">Avg: </span><span className="text-mono">{(position.yes_avg_price * 100).toFixed(0)}¢</span></div>
+                  <div className="flex justify-between mb-sm">
+                    <span><span className="text-green">YES</span> {position.yes_shares} shares</span>
+                    <span className="text-muted">Avg: {(position.yes_avg_price * 100).toFixed(0)}¢</span>
                   </div>
                 )}
                 {position.no_shares > 0 && (
-                  <div className="position-card">
-                    <div><span className="text-red">NO</span><span className="text-mono"> {position.no_shares} shares</span></div>
-                    <div><span className="text-muted">Avg: </span><span className="text-mono">{(position.no_avg_price * 100).toFixed(0)}¢</span></div>
+                  <div className="flex justify-between mb-sm">
+                    <span><span className="text-red">NO</span> {position.no_shares} shares</span>
+                    <span className="text-muted">Avg: {(position.no_avg_price * 100).toFixed(0)}¢</span>
                   </div>
                 )}
-                <div className="mt-md">
+                <div className="mt-md pt-md" style={{ borderTop: '1px solid var(--border-color)' }}>
                   <span className="text-muted">Unrealized P&L: </span>
-                  <span className={`text-mono ${position.unrealized_pnl >= 0 ? 'text-green' : 'text-red'}`}>
-                    {position.unrealized_pnl >= 0 ? '+' : ''}{position.unrealized_pnl.toFixed(2)} DC
+                  <span className={position.unrealized_pnl >= 0 ? 'text-green' : 'text-red'}>
+                    {position.unrealized_pnl >= 0 ? '+' : ''}{position.unrealized_pnl?.toFixed(2)} DC
                   </span>
                 </div>
               </div>
-            ) : <p className="text-muted">No position in this market</p>}
+            ) : (
+              <p className="text-muted">No position in this market</p>
+            )}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
-function OrderBookDisplay({ orderBook }) {
-  if (!orderBook) return null;
-  const yesBook = orderBook.yes || {};
-  const noBook = orderBook.no || {};
+function OrderBookSide({ title, book }) {
+  const isYes = title === 'YES';
 
   return (
-    <div className="card">
-      <h3 className="card-title mb-md">Order Book</h3>
-      <div className="grid grid-2 gap-md">
-        <div>
-          <h4 className="text-green text-mono mb-sm">YES</h4>
-          <div className="order-book-side">
-            <div className="order-book-title">Bids (Buy)</div>
-            {(yesBook.bids || []).slice(0, 5).map((level, i) => (
-              <div key={i} className="order-book-row order-book-bid"><span>{(level.price * 100).toFixed(0)}¢</span><span>{level.quantity}</span></div>
-            ))}
-            {(!yesBook.bids || yesBook.bids.length === 0) && <div className="text-muted">No bids</div>}
-          </div>
-          <div className="order-book-side mt-sm">
-            <div className="order-book-title">Asks (Sell)</div>
-            {(yesBook.asks || []).slice(0, 5).map((level, i) => (
-              <div key={i} className="order-book-row order-book-ask"><span>{(level.price * 100).toFixed(0)}¢</span><span>{level.quantity}</span></div>
-            ))}
-            {(!yesBook.asks || yesBook.asks.length === 0) && <div className="text-muted">No asks</div>}
-          </div>
-        </div>
-        <div>
-          <h4 className="text-red text-mono mb-sm">NO</h4>
-          <div className="order-book-side">
-            <div className="order-book-title">Bids (Buy)</div>
-            {(noBook.bids || []).slice(0, 5).map((level, i) => (
-              <div key={i} className="order-book-row order-book-bid"><span>{(level.price * 100).toFixed(0)}¢</span><span>{level.quantity}</span></div>
-            ))}
-            {(!noBook.bids || noBook.bids.length === 0) && <div className="text-muted">No bids</div>}
-          </div>
-          <div className="order-book-side mt-sm">
-            <div className="order-book-title">Asks (Sell)</div>
-            {(noBook.asks || []).slice(0, 5).map((level, i) => (
-              <div key={i} className="order-book-row order-book-ask"><span>{(level.price * 100).toFixed(0)}¢</span><span>{level.quantity}</span></div>
-            ))}
-            {(!noBook.asks || noBook.asks.length === 0) && <div className="text-muted">No asks</div>}
-          </div>
-        </div>
+    <div>
+      <div className={`text-mono mb-sm ${isYes ? 'text-green' : 'text-red'}`} style={{ fontWeight: 700 }}>
+        {title}
+      </div>
+
+      <div className="order-book-side mb-sm">
+        <div className="order-book-title">Bids (Buy)</div>
+        {book?.bids?.length > 0 ? (
+          book.bids.slice(0, 5).map((level, i) => (
+            <div key={i} className="order-book-row">
+              <span className="text-green">{(level.price * 100).toFixed(0)}¢</span>
+              <span className="text-muted">{level.quantity}</span>
+            </div>
+          ))
+        ) : (
+          <div className="text-muted text-sm">No bids</div>
+        )}
+      </div>
+
+      <div className="order-book-side">
+        <div className="order-book-title">Asks (Sell)</div>
+        {book?.asks?.length > 0 ? (
+          book.asks.slice(0, 5).map((level, i) => (
+            <div key={i} className="order-book-row">
+              <span className="text-red">{(level.price * 100).toFixed(0)}¢</span>
+              <span className="text-muted">{level.quantity}</span>
+            </div>
+          ))
+        ) : (
+          <div className="text-muted text-sm">No asks</div>
+        )}
       </div>
     </div>
   );
 }
 
-function OrderForm({ marketId, orderBook, onOrderPlaced }) {
+function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }) {
   const [side, setSide] = useState('YES');
   const [action, setAction] = useState('BUY');
-  const [orderType, setOrderType] = useState('LIMIT');
-  const [quantity, setQuantity] = useState('');
-  const [price, setPrice] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [orderType, setOrderType] = useState('MARKET');
+  const [quantity, setQuantity] = useState(10);
+  const [price, setPrice] = useState(0.5);
+  const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
 
-  useEffect(() => {
-    if (orderBook) {
-      const book = side === 'YES' ? orderBook.yes : orderBook.no;
-      if (action === 'BUY' && book?.best_ask) setPrice((book.best_ask * 100).toFixed(0));
-      else if (action === 'SELL' && book?.best_bid) setPrice((book.best_bid * 100).toFixed(0));
-    }
-  }, [side, action, orderBook]);
+  const book = side === 'YES' ? orderBook?.yes : orderBook?.no;
+  const bestAsk = book?.best_ask;
+  const bestBid = book?.best_bid;
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
+  // Calculate estimated cost/proceeds
+  const estimatedPrice = orderType === 'MARKET' 
+    ? (action === 'BUY' ? (bestAsk || 0.99) : (bestBid || 0.01))
+    : price;
+  const estimatedTotal = quantity * estimatedPrice;
+
+  // Calculate max shares user can buy/sell
+  const maxBuyShares = Math.floor(userBalance / (orderType === 'MARKET' ? (bestAsk || 0.99) : price));
+  const maxSellShares = side === 'YES' ? (position?.yes_shares || 0) : (position?.no_shares || 0);
+  const maxShares = action === 'BUY' ? maxBuyShares : maxSellShares;
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
     setResult(null);
-
     try {
-      const response = await api.placeOrder({
+      const res = await api.placeOrder({
         market_id: marketId,
         side,
         action,
         order_type: orderType,
-        quantity: parseInt(quantity),
-        price: orderType === 'LIMIT' ? parseFloat(price) / 100 : null,
+        quantity,
+        price: orderType === 'LIMIT' ? price : undefined,
       });
-      setResult({ success: true, message: `Order ${response.filled_quantity > 0 ? 'filled' : 'placed'}!`, details: response });
-      setQuantity('');
+      setResult({
+        success: true,
+        message: res.status === 'FILLED' ? 'Order filled!' : 
+                 res.status === 'PARTIAL' ? 'Partially filled' : 
+                 res.status === 'CANCELLED' ? 'No liquidity available' : 'Order placed',
+        details: res.filled_quantity > 0 
+          ? `Filled: ${res.filled_quantity} @ ${(res.average_price * 100).toFixed(0)}¢`
+          : null
+      });
       onOrderPlaced();
     } catch (err) {
-      setResult({ success: false, message: err.response?.data?.detail || err.message });
+      setResult({ success: false, message: err.message });
     }
-    setLoading(false);
+    setSubmitting(false);
   };
 
-  const estimatedCost = quantity && price ? (parseInt(quantity) * parseFloat(price) / 100).toFixed(2) : '0.00';
+  const presetAmounts = [10, 25, 50, 100];
 
   return (
-    <form className="order-form" onSubmit={handleSubmit}>
-      <h3 className="card-title mb-md">Place Order</h3>
-
-      <div className="order-form-side">
-        <button type="button" className={`order-form-side-btn yes ${side === 'YES' ? 'selected' : ''}`} onClick={() => setSide('YES')}>YES</button>
-        <button type="button" className={`order-form-side-btn no ${side === 'NO' ? 'selected' : ''}`} onClick={() => setSide('NO')}>NO</button>
+    <div>
+      {/* Side Selection */}
+      <div className="grid grid-2 gap-sm mb-md">
+        <button
+          className={`btn ${side === 'YES' ? 'btn-success' : 'btn-secondary'}`}
+          onClick={() => setSide('YES')}
+        >
+          YES
+        </button>
+        <button
+          className={`btn ${side === 'NO' ? 'btn-danger' : 'btn-secondary'}`}
+          onClick={() => setSide('NO')}
+        >
+          NO
+        </button>
       </div>
 
-      <div className="order-form-tabs">
-        <button type="button" className={`order-form-tab ${action === 'BUY' ? 'active' : ''}`} onClick={() => setAction('BUY')}>Buy</button>
-        <button type="button" className={`order-form-tab ${action === 'SELL' ? 'active' : ''}`} onClick={() => setAction('SELL')}>Sell</button>
+      {/* Action Selection */}
+      <div className="grid grid-2 gap-sm mb-md">
+        <button
+          className={`btn btn-sm ${action === 'BUY' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setAction('BUY')}
+          style={action === 'BUY' ? { background: 'var(--accent-cyan)', color: 'black' } : {}}
+        >
+          Buy
+        </button>
+        <button
+          className={`btn btn-sm ${action === 'SELL' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setAction('SELL')}
+          style={action === 'SELL' ? { background: 'var(--accent-purple)' } : {}}
+        >
+          Sell
+        </button>
       </div>
 
+      {/* Order Type */}
       <div className="input-group">
         <label className="input-label">Order Type</label>
-        <select className="input" value={orderType} onChange={(e) => setOrderType(e.target.value)}>
-          <option value="LIMIT">Limit</option>
+        <select
+          className="input"
+          value={orderType}
+          onChange={(e) => setOrderType(e.target.value)}
+        >
           <option value="MARKET">Market</option>
+          <option value="LIMIT">Limit</option>
         </select>
       </div>
 
-      <div className="input-group">
-        <label className="input-label">Shares</label>
-        <input type="number" className="input" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="100" min="1" required />
-      </div>
-
+      {/* Price (for limit orders) */}
       {orderType === 'LIMIT' && (
         <div className="input-group">
           <label className="input-label">Price (¢)</label>
-          <input type="number" className="input" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="50" min="1" max="99" required />
+          <input
+            type="number"
+            className="input"
+            min="1"
+            max="99"
+            value={Math.round(price * 100)}
+            onChange={(e) => setPrice(parseInt(e.target.value) / 100)}
+          />
         </div>
       )}
 
-      {orderType === 'LIMIT' && <div className="mb-md text-muted">Estimated {action === 'BUY' ? 'cost' : 'proceeds'}: {estimatedCost} DC</div>}
+      {/* Quantity */}
+      <div className="input-group">
+        <label className="input-label">Shares</label>
+        <input
+          type="number"
+          className="input"
+          min="1"
+          max="10000"
+          value={quantity}
+          onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
+        />
+      </div>
 
-      <button type="submit" disabled={loading} className={`btn ${action === 'BUY' ? 'btn-success' : 'btn-danger'}`} style={{ width: '100%' }}>
-        {loading ? <span className="spinner"></span> : `${action} ${side}`}
+      {/* Preset Amounts */}
+      <div className="flex gap-sm mb-md" style={{ flexWrap: 'wrap' }}>
+        {presetAmounts.map((amt) => (
+          <button
+            key={amt}
+            className={`btn btn-sm ${quantity === amt ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setQuantity(amt)}
+            style={{ minWidth: '50px' }}
+          >
+            {amt}
+          </button>
+        ))}
+        <button
+          className="btn btn-sm btn-secondary"
+          onClick={() => setQuantity(Math.max(1, maxShares))}
+          disabled={maxShares <= 0}
+          style={{ minWidth: '50px' }}
+        >
+          MAX
+        </button>
+      </div>
+
+      {/* Cost/Proceeds Estimate */}
+      <div className="mb-md p-sm" style={{ background: 'var(--bg-secondary)', borderRadius: '8px' }}>
+        <div className="flex justify-between text-sm">
+          <span className="text-muted">Est. Price:</span>
+          <span className="text-mono">{(estimatedPrice * 100).toFixed(0)}¢</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="text-muted">{action === 'BUY' ? 'Total Cost:' : 'Proceeds:'}</span>
+          <span className="text-mono" style={{ fontWeight: 700 }}>
+            {estimatedTotal.toFixed(2)} DC
+          </span>
+        </div>
+        {action === 'BUY' && (
+          <div className="flex justify-between text-sm">
+            <span className="text-muted">Balance After:</span>
+            <span className={`text-mono ${userBalance - estimatedTotal < 0 ? 'text-red' : ''}`}>
+              {(userBalance - estimatedTotal).toFixed(2)} DC
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Submit Button */}
+      <button
+        className={`btn btn-lg w-full ${action === 'BUY' ? 'btn-success' : 'btn-danger'}`}
+        onClick={handleSubmit}
+        disabled={submitting || quantity <= 0 || (action === 'BUY' && estimatedTotal > userBalance) || (action === 'SELL' && quantity > maxSellShares)}
+      >
+        {submitting ? 'Placing...' : `${action} ${side}`}
       </button>
 
+      {/* Validation Messages */}
+      {action === 'BUY' && estimatedTotal > userBalance && (
+        <p className="text-red text-sm mt-sm">Insufficient balance</p>
+      )}
+      {action === 'SELL' && quantity > maxSellShares && (
+        <p className="text-red text-sm mt-sm">You only have {maxSellShares} {side} shares</p>
+      )}
+
+      {/* Result */}
       {result && (
         <div className={`mt-md ${result.success ? 'text-green' : 'text-red'}`}>
-          {result.message}
-          {result.details && result.details.filled_quantity > 0 && (
-            <div className="text-muted mt-sm">Filled: {result.details.filled_quantity} @ {result.details.average_price ? (result.details.average_price * 100).toFixed(0) + '¢' : 'market'}</div>
-          )}
+          <div>{result.message}</div>
+          {result.details && <div className="text-muted text-sm">{result.details}</div>}
         </div>
       )}
-    </form>
+    </div>
   );
 }
 
