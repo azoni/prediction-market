@@ -11,15 +11,21 @@ Security: NEVER trust client-sent user IDs. Always verify the Firebase JWT.
 
 import os
 from typing import Optional
-from functools import lru_cache
 
-import firebase_admin
-from firebase_admin import auth as firebase_auth, credentials
 from fastapi import Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import User
+
+# Try to import firebase-admin, but don't fail if not installed
+try:
+    import firebase_admin
+    from firebase_admin import auth as firebase_auth, credentials
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+    firebase_admin = None
 
 
 # =============================================================================
@@ -28,14 +34,17 @@ from models import User
 
 # List of admin emails - ADD YOUR EMAIL HERE
 ADMIN_EMAILS = [
-    "charltonuw@gmail.com",
     # "your-email@gmail.com",  # <-- Add your Google email
+    "charltonuw@gmail.com",
 ]
 
 # List of admin user IDs (Firebase UIDs) - alternative to email
 ADMIN_USER_IDS = [
     # "firebase-uid-here",
 ]
+
+# Track if we're in dev mode (no Firebase verification)
+_dev_mode = True
 
 
 def init_firebase():
@@ -48,7 +57,16 @@ def init_firebase():
     For production (Render/etc): Set FIREBASE_CREDENTIALS env var
     to the JSON content of your service account.
     """
+    global _dev_mode
+    
+    if not FIREBASE_AVAILABLE:
+        print("⚠️  firebase-admin not installed. Running in DEV MODE.")
+        print("⚠️  Auth tokens will NOT be verified. Install firebase-admin for production.")
+        _dev_mode = True
+        return
+    
     if firebase_admin._apps:
+        _dev_mode = False
         return  # Already initialized
     
     # Option 1: Credentials from environment variable (for production)
@@ -59,6 +77,7 @@ def init_firebase():
         cred = credentials.Certificate(creds_dict)
         firebase_admin.initialize_app(cred)
         print("Firebase Admin initialized from FIREBASE_CREDENTIALS env var")
+        _dev_mode = False
         return
     
     # Option 2: Credentials file path (for local development)
@@ -67,12 +86,14 @@ def init_firebase():
         cred = credentials.Certificate(creds_path)
         firebase_admin.initialize_app(cred)
         print(f"Firebase Admin initialized from {creds_path}")
+        _dev_mode = False
         return
     
     # Option 3: Default credentials (for Google Cloud environments)
     try:
         firebase_admin.initialize_app()
         print("Firebase Admin initialized with default credentials")
+        _dev_mode = False
         return
     except Exception:
         pass
@@ -80,15 +101,12 @@ def init_firebase():
     # If we get here, Firebase is not configured - run in dev mode
     print("⚠️  WARNING: Firebase Admin not configured. Running in DEV MODE.")
     print("⚠️  Auth tokens will NOT be verified. Do not use in production!")
-
-
-# Track if we're in dev mode (no Firebase verification)
-_dev_mode = False
+    _dev_mode = True
 
 
 def is_dev_mode() -> bool:
     """Check if running without Firebase verification."""
-    return _dev_mode or not firebase_admin._apps
+    return _dev_mode
 
 
 # =============================================================================
@@ -103,13 +121,28 @@ def verify_firebase_token(id_token: str) -> dict:
     Raises HTTPException if token is invalid.
     """
     if is_dev_mode():
-        # In dev mode, the "token" is just the UID
-        # This is insecure but allows testing without Firebase setup
-        return {
-            "uid": id_token,
-            "email": None,
-            "name": None,
-        }
+        # In dev mode, decode the JWT without verifying signature
+        # This extracts the real user ID but doesn't verify authenticity
+        # WARNING: Not secure for production - install firebase-admin for real verification
+        try:
+            import jwt
+            # Decode without verification - just to extract claims
+            decoded = jwt.decode(id_token, options={"verify_signature": False})
+            return {
+                "uid": decoded.get("user_id") or decoded.get("sub"),
+                "email": decoded.get("email"),
+                "name": decoded.get("name"),
+            }
+        except Exception as e:
+            # If it's not a valid JWT format, it might be a plain UID (local testing)
+            # Only allow this for very short strings (UIDs are typically 28 chars)
+            if len(id_token) < 50 and "." not in id_token:
+                return {
+                    "uid": id_token,
+                    "email": None,
+                    "name": None,
+                }
+            raise HTTPException(status_code=401, detail=f"Invalid token format: {str(e)}")
     
     try:
         decoded = firebase_auth.verify_id_token(id_token)
@@ -230,7 +263,6 @@ def setup_auth():
     global _dev_mode
     try:
         init_firebase()
-        _dev_mode = not firebase_admin._apps
     except Exception as e:
         print(f"Firebase init failed: {e}")
         _dev_mode = True

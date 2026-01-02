@@ -9,19 +9,18 @@ function MarketsPage() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    const loadMarkets = async () => {
+      setLoading(true);
+      try {
+        const data = await api.getMarkets(filter || null);
+        setMarkets(data);
+      } catch (err) {
+        console.error('Failed to load markets:', err);
+      }
+      setLoading(false);
+    };
     loadMarkets();
   }, [filter]);
-
-  const loadMarkets = async () => {
-    setLoading(true);
-    try {
-      const data = await api.getMarkets(filter || null);
-      setMarkets(data);
-    } catch (err) {
-      console.error('Failed to load markets:', err);
-    }
-    setLoading(false);
-  };
 
   return (
     <div>

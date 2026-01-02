@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 function AdminPage() {
-  const { user } = useAuth();
+  useAuth(); // Ensures user is logged in
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState(null);
@@ -12,23 +12,7 @@ function AdminPage() {
   const [activeTab, setActiveTab] = useState('stats');
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    checkAdmin();
-  }, []);
-
-  const checkAdmin = async () => {
-    try {
-      await api.client.get('/admin/status');
-      setIsAdmin(true);
-      loadData();
-    } catch (err) {
-      setIsAdmin(false);
-      setError('You do not have admin privileges.');
-    }
-    setLoading(false);
-  };
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       const [statsData, usersData, marketsData] = await Promise.all([
         api.client.get('/admin/stats'),
@@ -41,7 +25,22 @@ function AdminPage() {
     } catch (err) {
       console.error('Failed to load admin data:', err);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const checkAdmin = async () => {
+      try {
+        await api.client.get('/admin/status');
+        setIsAdmin(true);
+        loadData();
+      } catch (err) {
+        setIsAdmin(false);
+        setError('You do not have admin privileges.');
+      }
+      setLoading(false);
+    };
+    checkAdmin();
+  }, [loadData]);
 
   const handleDeleteMarket = async (marketId, question) => {
     if (!window.confirm(`Delete market "${question}"?\n\nThis will refund all users their cost basis.`)) {
