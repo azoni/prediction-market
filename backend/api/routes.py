@@ -121,6 +121,8 @@ def get_current_user_info(user: User = Depends(get_current_user)):
         "display_name": user.display_name,
         "email": user.email,
         "balance": user.balance,
+        "login_streak": user.login_streak,
+        "total_trades": user.total_trades,
     }
 
 
@@ -131,13 +133,12 @@ def get_current_user_info(user: User = Depends(get_current_user)):
 @router.get("/markets")
 def list_markets(
     status: Optional[str] = None,
-    limit: int = 50,
     db: Session = Depends(get_db),
 ):
     query = db.query(Market)
     if status:
         query = query.filter(Market.status == MarketStatus(status))
-    markets = query.order_by(Market.created_at.desc()).limit(limit).all()
+    markets = query.order_by(Market.created_at.desc()).limit(50).all()
 
     results = []
     for market in markets:
@@ -145,17 +146,11 @@ def list_markets(
         results.append({
             "id": market.id,
             "question": market.question,
-            "description": market.description,
-            "creator_id": market.creator_id,
             "status": market.status.value,
-            "resolved_outcome": market.resolved_outcome,
-            "resolved_at": market.resolved_at,
-            "closes_at": market.closes_at,
             "created_at": market.created_at,
-            "yes_bid": snapshot["yes"]["best_bid"],
-            "yes_ask": snapshot["yes"]["best_ask"],
-            "no_bid": snapshot["no"]["best_bid"],
-            "no_ask": snapshot["no"]["best_ask"],
+            "yes_price": snapshot["yes"]["best_bid"],
+            "no_price": snapshot["no"]["best_bid"],
+            "resolved_outcome": market.resolved_outcome,
         })
 
     return results
@@ -184,11 +179,8 @@ def create_market(
 
     db.commit()
 
-    # Initialize market maker quotes
-    for side in ["YES", "NO"]:
-        orders = market_maker.generate_orders(market_id, side)
-        for order_params in orders:
-            matching_engine.process_order(**order_params)
+    # Initialize market maker quotes and save to database
+    _initialize_market_maker_orders(market_id, db)
 
     return {
         "id": market_id,
@@ -205,8 +197,7 @@ def get_market(market_id: str, db: Session = Depends(get_db)):
 
     # Ensure market maker has liquidity on this market
     if market.status == MarketStatus.OPEN:
-        for side in ["YES", "NO"]:
-            _refresh_market_maker_quotes(market_id, side, db)
+        _refresh_market_maker_quotes(market_id, db)
 
     book_snapshot = matching_engine.get_book_snapshot(market_id)
 
@@ -251,7 +242,7 @@ def resolve_market_endpoint(
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
 
-    if market.creator_id != user.id:
+    if market.creator_id != user.id and not is_admin(user):
         raise HTTPException(status_code=403, detail="Only creator can resolve")
 
     if market.status == MarketStatus.RESOLVED:
@@ -325,6 +316,7 @@ def place_order(
         status=OrderStatus.OPEN,
     )
     db.add(order)
+    db.flush()  # Get the order ID into the database before matching
 
     result = matching_engine.process_order(
         market_id=order_data.market_id,
@@ -356,16 +348,13 @@ def place_order(
 
     db.commit()
 
-    if result.trades:
-        _refresh_market_maker_quotes(order_data.market_id, order_data.side, db)
-
     return {
         "order_id": order_id,
+        "status": order.status.value,
         "filled_quantity": result.filled_quantity,
         "remaining_quantity": result.remaining_quantity,
         "trades": len(result.trades),
         "average_price": result.average_price,
-        "added_to_book": result.added_to_book,
         "achievements_earned": achievements_earned,
     }
 
@@ -386,20 +375,20 @@ def cancel_order(
     if order.status not in [OrderStatus.OPEN, OrderStatus.PARTIAL]:
         raise HTTPException(status_code=400, detail="Order not cancellable")
 
-    cancelled = matching_engine.cancel_order(
-        market_id=order.market_id,
-        order_id=order_id,
-        side=order.side.value,
-        action=order.action.value,
-        price=order.price,
-    )
+    # Try to remove from in-memory order book (may not exist if server restarted)
+    if order.price is not None:
+        matching_engine.cancel_order(
+            market_id=order.market_id,
+            order_id=order_id,
+            side=order.side.value,
+            action=order.action.value,
+            price=order.price,
+        )
 
-    if cancelled:
-        order.status = OrderStatus.CANCELLED
-        db.commit()
-        return {"message": "Order cancelled"}
-    else:
-        raise HTTPException(status_code=400, detail="Order not found in book")
+    # Always update database status
+    order.status = OrderStatus.CANCELLED
+    db.commit()
+    return {"message": "Order cancelled"}
 
 
 @router.get("/orders")
@@ -441,24 +430,30 @@ def get_positions(
 ):
     def price_getter(market_id: str):
         snapshot = matching_engine.get_book_snapshot(market_id)
-        yes_price = snapshot["yes"]["mid_price"] or 0.50
-        no_price = snapshot["no"]["mid_price"] or 0.50
+        yes_price = snapshot["yes"]["best_bid"] or 0.5
+        no_price = snapshot["no"]["best_bid"] or 0.5
         return yes_price, no_price
 
     positions = get_user_positions(db, user.id, price_getter)
 
-    return [
-        {
-            "market_id": p.market_id,
-            "yes_shares": p.yes_shares,
-            "no_shares": p.no_shares,
-            "yes_avg_price": p.yes_avg_price,
-            "no_avg_price": p.no_avg_price,
-            "unrealized_pnl": p.unrealized_pnl,
-            "realized_pnl": p.realized_pnl,
-        }
-        for p in positions
-    ]
+    results = []
+    for pos in positions:
+        market = db.query(Market).filter(Market.id == pos.market_id).first()
+        results.append({
+            "market_id": pos.market_id,
+            "question": market.question if market else "Unknown",
+            "market_status": market.status.value if market else "UNKNOWN",
+            "yes_shares": pos.yes_shares,
+            "no_shares": pos.no_shares,
+            "yes_avg_price": pos.yes_avg_price,
+            "no_avg_price": pos.no_avg_price,
+            "yes_current_value": pos.yes_current_value,
+            "no_current_value": pos.no_current_value,
+            "unrealized_pnl": pos.unrealized_pnl,
+            "realized_pnl": pos.realized_pnl,
+        })
+
+    return results
 
 
 @router.get("/positions/{market_id}")
@@ -484,14 +479,13 @@ def get_position(
         }
 
     snapshot = matching_engine.get_book_snapshot(market_id)
-    yes_price = snapshot["yes"]["mid_price"] or 0.50
-    no_price = snapshot["no"]["mid_price"] or 0.50
+    yes_price = snapshot["yes"]["best_bid"] or 0.5
+    no_price = snapshot["no"]["best_bid"] or 0.5
 
     yes_value = position.yes_shares * yes_price
     no_value = position.no_shares * no_price
-    total_value = yes_value + no_value
     total_cost = position.yes_cost_basis + position.no_cost_basis
-    unrealized = total_value - total_cost
+    unrealized = (yes_value + no_value) - total_cost
 
     return {
         "market_id": market_id,
@@ -509,7 +503,7 @@ def get_position(
 # =============================================================================
 
 @router.get("/leaderboard")
-def leaderboard(limit: int = 10, db: Session = Depends(get_db)):
+def leaderboard(limit: int = 50, db: Session = Depends(get_db)):
     return get_leaderboard(db, limit)
 
 
@@ -557,14 +551,12 @@ def get_reward_stats(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    earned_achievements = get_user_achievements(db, user.id)
     all_achievements = get_all_achievements(db, user.id)
+    earned_achievements = [a for a in all_achievements if a["earned"]]
 
     return {
         "balance": user.balance,
-        "lifetime_earnings": user.lifetime_earnings,
         "login_streak": user.login_streak,
-        "last_login": user.last_login_date.isoformat() if user.last_login_date else None,
         "total_trades": user.total_trades,
         "total_markets_created": user.total_markets_created,
         "total_correct_predictions": user.total_correct_predictions,
@@ -620,14 +612,70 @@ def _process_trade(db: Session, trade_result: TradeResult, current_user: User):
         )
 
 
-def _refresh_market_maker_quotes(market_id: str, side: str, db: Session):
-    snapshot = matching_engine.get_book_snapshot(market_id)
-    book = snapshot["yes"] if side == "YES" else snapshot["no"]
-
-    if book["spread"] is None or book["spread"] > 0.10:
+def _initialize_market_maker_orders(market_id: str, db: Session):
+    """Create initial market maker orders for a new market and save to database."""
+    for side in ["YES", "NO"]:
         orders = market_maker.generate_orders(market_id, side)
         for order_params in orders:
+            # Save order to database first
+            order = Order(
+                id=order_params["order_id"],
+                user_id=MarketMakerBot.USER_ID,
+                market_id=order_params["market_id"],
+                side=Side(order_params["side"]),
+                action=OrderAction(order_params["action"]),
+                order_type=OrderType(order_params["order_type"]),
+                price=order_params["price"],
+                quantity=order_params["quantity"],
+                filled_quantity=0,
+                status=OrderStatus.OPEN,
+                is_market_maker=True,
+            )
+            db.add(order)
+            
+            # Then add to matching engine
             matching_engine.process_order(**order_params)
+    
+    db.commit()
+
+
+def _refresh_market_maker_quotes(market_id: str, db: Session):
+    """Refresh market maker quotes if spread is too wide."""
+    snapshot = matching_engine.get_book_snapshot(market_id)
+    
+    for side in ["YES", "NO"]:
+        book = snapshot["yes"] if side == "YES" else snapshot["no"]
+        
+        # Add liquidity if spread is too wide or no orders exist
+        if book["spread"] is None or book["spread"] > 0.10:
+            orders = market_maker.generate_orders(market_id, side)
+            for order_params in orders:
+                # Check if this order already exists
+                existing = db.query(Order).filter(
+                    Order.id == order_params["order_id"]
+                ).first()
+                
+                if not existing:
+                    # Save order to database first
+                    order = Order(
+                        id=order_params["order_id"],
+                        user_id=MarketMakerBot.USER_ID,
+                        market_id=order_params["market_id"],
+                        side=Side(order_params["side"]),
+                        action=OrderAction(order_params["action"]),
+                        order_type=OrderType(order_params["order_type"]),
+                        price=order_params["price"],
+                        quantity=order_params["quantity"],
+                        filled_quantity=0,
+                        status=OrderStatus.OPEN,
+                        is_market_maker=True,
+                    )
+                    db.add(order)
+                    
+                    # Then add to matching engine
+                    matching_engine.process_order(**order_params)
+            
+            db.commit()
 
 
 # =============================================================================
