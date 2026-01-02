@@ -501,9 +501,20 @@ def get_position(
 # =============================================================================
 
 @router.get("/leaderboard")
-def leaderboard(limit: int = 10, db: Session = Depends(get_db)):
-    return get_leaderboard(db, limit)
-
+def get_leaderboard(limit: int = 100, db: Session = Depends(get_db)):
+    """Get all users ranked by realized P&L."""
+    users = db.query(User).order_by(User.realized_pnl.desc()).limit(limit).all()
+    return [
+        {
+            "rank": i + 1,
+            "user_id": u.id,
+            "display_name": u.display_name,
+            "realized_pnl": round(u.realized_pnl, 2),
+            "total_trades": u.total_trades,
+            "balance": round(u.balance, 2),
+        }
+        for i, u in enumerate(users)
+    ]
 
 # =============================================================================
 # Rewards Endpoints

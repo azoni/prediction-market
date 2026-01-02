@@ -57,110 +57,92 @@ def get_or_create_position(db: Session, user_id: str, market_id: str) -> Positio
 
 
 def update_position_for_buy(
+    db: Session,
     position: Position,
     side: str,
     quantity: int,
     price: float,
+    user_id: str,
 ) -> PositionUpdate:
-    cost = quantity * price
+    """
+    Update position when buying shares.
+    """
+    from market_maker import MarketMakerBot
+    
+    # Market maker doesn't track positions
+    if user_id == MarketMakerBot.USER_ID:
+        return PositionUpdate(
+            shares_delta=quantity,
+            cost_basis_delta=0,
+            realized_pnl=0,
+        )
+    
+    cost = price * quantity
 
     if side == "YES":
-        old_shares = position.yes_shares
-        old_avg = position.yes_avg_price
-        old_cost = position.yes_cost_basis
-
-        new_shares = old_shares + quantity
-        if new_shares > 0:
-            new_avg = ((old_shares * old_avg) + (quantity * price)) / new_shares
-        else:
-            new_avg = 0.0
-        new_cost = old_cost + cost
-
-        position.yes_shares = new_shares
-        position.yes_avg_price = round(new_avg, 4)
-        position.yes_cost_basis = round(new_cost, 4)
+        position.yes_shares += quantity
+        position.yes_cost_basis += cost
     else:
-        old_shares = position.no_shares
-        old_avg = position.no_avg_price
-        old_cost = position.no_cost_basis
-
-        new_shares = old_shares + quantity
-        if new_shares > 0:
-            new_avg = ((old_shares * old_avg) + (quantity * price)) / new_shares
-        else:
-            new_avg = 0.0
-        new_cost = old_cost + cost
-
-        position.no_shares = new_shares
-        position.no_avg_price = round(new_avg, 4)
-        position.no_cost_basis = round(new_cost, 4)
+        position.no_shares += quantity
+        position.no_cost_basis += cost
 
     return PositionUpdate(
-        user_id=position.user_id,
-        market_id=position.market_id,
-        side=side,
         shares_delta=quantity,
-        price=price,
-        cost_delta=cost,
-        realized_pnl=0.0,
+        cost_basis_delta=cost,
+        realized_pnl=0,
     )
 
 
 def update_position_for_sell(
+    db: Session,
     position: Position,
     side: str,
     quantity: int,
     price: float,
+    user_id: str,
 ) -> PositionUpdate:
+    """
+    Update position when selling shares.
+    Returns the P&L realized from this sale.
+    """
+    from market_maker import MarketMakerBot
+    
+    # Market maker can sell without owning (it provides liquidity)
+    if user_id == MarketMakerBot.USER_ID:
+        return PositionUpdate(
+            shares_delta=-quantity,
+            cost_basis_delta=0,
+            realized_pnl=0,
+        )
+    
     if side == "YES":
         old_shares = position.yes_shares
-        old_avg = position.yes_avg_price
-        old_cost = position.yes_cost_basis
-
-        if quantity > old_shares:
-            raise ValueError(f"Cannot sell {quantity} shares, only own {old_shares}")
-
-        realized = (price - old_avg) * quantity
-        new_shares = old_shares - quantity
-        cost_reduction = old_avg * quantity
-        new_cost = old_cost - cost_reduction
-
-        position.yes_shares = new_shares
-        position.yes_cost_basis = round(max(0, new_cost), 4)
-        position.realized_pnl = round(position.realized_pnl + realized, 4)
-
-        if new_shares == 0:
-            position.yes_avg_price = 0.0
+        old_cost_basis = position.yes_cost_basis
     else:
         old_shares = position.no_shares
-        old_avg = position.no_avg_price
-        old_cost = position.no_cost_basis
+        old_cost_basis = position.no_cost_basis
 
-        if quantity > old_shares:
-            raise ValueError(f"Cannot sell {quantity} shares, only own {old_shares}")
+    if old_shares < quantity:
+        raise ValueError(f"Cannot sell {quantity} shares, only own {old_shares}")
 
-        realized = (price - old_avg) * quantity
-        new_shares = old_shares - quantity
-        cost_reduction = old_avg * quantity
-        new_cost = old_cost - cost_reduction
+    avg_cost = old_cost_basis / old_shares if old_shares > 0 else 0
+    cost_of_sold = avg_cost * quantity
+    sale_proceeds = price * quantity
+    realized_pnl = sale_proceeds - cost_of_sold
 
-        position.no_shares = new_shares
-        position.no_cost_basis = round(max(0, new_cost), 4)
-        position.realized_pnl = round(position.realized_pnl + realized, 4)
+    if side == "YES":
+        position.yes_shares -= quantity
+        position.yes_cost_basis -= cost_of_sold
+    else:
+        position.no_shares -= quantity
+        position.no_cost_basis -= cost_of_sold
 
-        if new_shares == 0:
-            position.no_avg_price = 0.0
-
-    proceeds = quantity * price
+    position.realized_pnl += realized_pnl
 
     return PositionUpdate(
-        user_id=position.user_id,
-        market_id=position.market_id,
-        side=side,
         shares_delta=-quantity,
-        price=price,
-        cost_delta=-proceeds,
-        realized_pnl=round(realized, 4),
+        cost_basis_delta=-cost_of_sold,
+        realized_pnl=realized_pnl,
     )
 
 
