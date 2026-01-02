@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 function MarketsPage() {
+  const { user } = useAuth();
   const [markets, setMarkets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('OPEN');
@@ -26,7 +28,11 @@ function MarketsPage() {
     <div>
       <div className="flex flex-between flex-center mb-lg">
         <h1>Markets</h1>
-        <Link to="/markets/new" className="btn btn-primary">+ Create Market</Link>
+        {user ? (
+          <Link to="/markets/new" className="btn btn-primary">+ Create Market</Link>
+        ) : (
+          <Link to="/login" className="btn btn-secondary">Sign in to create</Link>
+        )}
       </div>
 
       <div className="flex gap-sm mb-lg">
@@ -47,7 +53,11 @@ function MarketsPage() {
         <div className="empty-state">
           <div className="empty-state-icon">📊</div>
           <p>No markets found</p>
-          <Link to="/markets/new" className="btn btn-primary mt-md">Create the first one</Link>
+          {user ? (
+            <Link to="/markets/new" className="btn btn-primary mt-md">Create the first one</Link>
+          ) : (
+            <Link to="/login" className="btn btn-primary mt-md">Sign in to create</Link>
+          )}
         </div>
       ) : (
         <div className="grid grid-2">

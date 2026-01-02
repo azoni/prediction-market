@@ -7,6 +7,7 @@ function PortfolioPage() {
   const { user } = useAuth();
   const [positions, setPositions] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('positions');
 
@@ -14,12 +15,14 @@ function PortfolioPage() {
     const loadData = async () => {
       setLoading(true);
       try {
-        const [positionsData, ordersData] = await Promise.all([
+        const [positionsData, ordersData, transactionsData] = await Promise.all([
           api.getPositions(),
           api.getOrders('OPEN'),
+          api.getTransactions(50),
         ]);
         setPositions(positionsData);
         setOrders(ordersData);
+        setTransactions(transactionsData);
       } catch (err) {
         console.error('Failed to load portfolio:', err);
       }
@@ -47,85 +50,143 @@ function PortfolioPage() {
       <div className="grid grid-3 mb-lg">
         <div className="card">
           <div className="text-muted mb-sm">Balance</div>
-          <div className="text-mono" style={{ fontSize: '1.5rem', color: 'var(--accent-cyan)' }}>{user?.balance?.toFixed(2)} DC</div>
+          <div className="text-mono text-green" style={{ fontSize: '1.5rem' }}>
+            {user?.balance?.toFixed(2)} DC
+          </div>
         </div>
         <div className="card">
           <div className="text-muted mb-sm">Unrealized P&L</div>
-          <div className="text-mono" style={{ fontSize: '1.5rem', color: totalUnrealized >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+          <div className={`text-mono ${totalUnrealized >= 0 ? 'text-green' : 'text-red'}`} style={{ fontSize: '1.5rem' }}>
             {totalUnrealized >= 0 ? '+' : ''}{totalUnrealized.toFixed(2)} DC
           </div>
         </div>
         <div className="card">
           <div className="text-muted mb-sm">Realized P&L</div>
-          <div className="text-mono" style={{ fontSize: '1.5rem', color: totalRealized >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+          <div className={`text-mono ${totalRealized >= 0 ? 'text-green' : 'text-red'}`} style={{ fontSize: '1.5rem' }}>
             {totalRealized >= 0 ? '+' : ''}{totalRealized.toFixed(2)} DC
           </div>
         </div>
       </div>
 
-      <div className="flex gap-sm mb-lg">
-        <button onClick={() => setActiveTab('positions')} className={`btn ${activeTab === 'positions' ? 'btn-primary' : 'btn-secondary'}`}>
+      <div className="flex gap-sm mb-md">
+        <button
+          className={`btn btn-sm ${activeTab === 'positions' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setActiveTab('positions')}
+        >
           Positions ({positions.length})
         </button>
-        <button onClick={() => setActiveTab('orders')} className={`btn ${activeTab === 'orders' ? 'btn-primary' : 'btn-secondary'}`}>
+        <button
+          className={`btn btn-sm ${activeTab === 'orders' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setActiveTab('orders')}
+        >
           Open Orders ({orders.length})
+        </button>
+        <button
+          className={`btn btn-sm ${activeTab === 'transactions' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setActiveTab('transactions')}
+        >
+          Transactions
         </button>
       </div>
 
       {loading ? (
         <div className="text-center"><span className="spinner"></span></div>
-      ) : activeTab === 'positions' ? (
-        positions.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state-icon">📊</div>
-            <p>No positions yet</p>
-            <Link to="/markets" className="btn btn-primary mt-md">Browse Markets</Link>
-          </div>
-        ) : (
-          <div>
-            {positions.map((position) => (
-              <Link key={position.market_id} to={`/markets/${position.market_id}`} style={{ textDecoration: 'none' }}>
-                <div className="card mb-md" style={{ cursor: 'pointer' }}>
-                  <div className="flex flex-between flex-center">
+      ) : (
+        <div className="card">
+          {activeTab === 'positions' && (
+            positions.length === 0 ? (
+              <div className="text-center py-lg">
+                <p className="text-muted mb-md">No open positions</p>
+                <Link to="/markets" className="btn btn-primary">Browse Markets</Link>
+              </div>
+            ) : (
+              <div>
+                {positions.map((pos) => (
+                  <Link
+                    key={pos.market_id}
+                    to={`/markets/${pos.market_id}`}
+                    className="flex justify-between items-center py-md"
+                    style={{ borderBottom: '1px solid var(--border-color)', textDecoration: 'none', color: 'inherit' }}
+                  >
                     <div>
-                      <div className="text-muted mb-sm" style={{ fontSize: '0.875rem' }}>Market: {position.market_id.slice(0, 8)}...</div>
-                      <div className="flex gap-md">
-                        {position.yes_shares > 0 && <div><span className="text-green">YES</span><span className="text-mono"> {position.yes_shares}</span><span className="text-muted"> @ {(position.yes_avg_price * 100).toFixed(0)}¢</span></div>}
-                        {position.no_shares > 0 && <div><span className="text-red">NO</span><span className="text-mono"> {position.no_shares}</span><span className="text-muted"> @ {(position.no_avg_price * 100).toFixed(0)}¢</span></div>}
+                      <div style={{ fontWeight: 500 }}>{pos.question}</div>
+                      <div className="text-sm text-muted mt-xs">
+                        {pos.yes_shares > 0 && <span className="text-green mr-sm">YES: {pos.yes_shares}</span>}
+                        {pos.no_shares > 0 && <span className="text-red">NO: {pos.no_shares}</span>}
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className={`text-mono ${position.unrealized_pnl >= 0 ? 'text-green' : 'text-red'}`}>{position.unrealized_pnl >= 0 ? '+' : ''}{position.unrealized_pnl.toFixed(2)} DC</div>
-                      <div className="text-muted" style={{ fontSize: '0.75rem' }}>unrealized</div>
+                      <div className={pos.unrealized_pnl >= 0 ? 'text-green' : 'text-red'}>
+                        {pos.unrealized_pnl >= 0 ? '+' : ''}{pos.unrealized_pnl?.toFixed(2)} DC
+                      </div>
+                      <div className="text-sm text-muted">unrealized</div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )
+          )}
+
+          {activeTab === 'orders' && (
+            orders.length === 0 ? (
+              <p className="text-muted text-center py-lg">No open orders</p>
+            ) : (
+              <div>
+                {orders.map((order) => (
+                  <div
+                    key={order.id}
+                    className="flex justify-between items-center py-md"
+                    style={{ borderBottom: '1px solid var(--border-color)' }}
+                  >
+                    <div>
+                      <span className={`mr-sm ${order.side === 'YES' ? 'text-green' : 'text-red'}`}>
+                        {order.side}
+                      </span>
+                      <span className="text-muted">{order.action}</span>
+                      <span className="ml-sm">{order.quantity - order.filled_quantity} @ {(order.price * 100).toFixed(0)}¢</span>
+                    </div>
+                    <button
+                      className="btn btn-sm btn-danger"
+                      onClick={() => handleCancelOrder(order.id)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )
+          )}
+
+          {activeTab === 'transactions' && (
+            transactions.length === 0 ? (
+              <p className="text-muted text-center py-lg">No transactions yet</p>
+            ) : (
+              <div>
+                {transactions.map((tx) => (
+                  <div
+                    key={tx.id}
+                    className="flex justify-between items-center py-md"
+                    style={{ borderBottom: '1px solid var(--border-color)' }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 500 }}>{tx.description}</div>
+                      <div className="text-sm text-muted">
+                        {new Date(tx.created_at).toLocaleDateString()} {new Date(tx.created_at).toLocaleTimeString()}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-mono ${tx.amount >= 0 ? 'text-green' : 'text-red'}`} style={{ fontWeight: 600 }}>
+                        {tx.amount >= 0 ? '+' : ''}{tx.amount.toFixed(2)} DC
+                      </div>
+                      <div className="text-sm text-muted">
+                        Bal: {tx.balance_after.toFixed(2)}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )
-      ) : orders.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-state-icon">📋</div>
-          <p>No open orders</p>
-        </div>
-      ) : (
-        <div>
-          {orders.map((order) => (
-            <div key={order.id} className="card mb-md">
-              <div className="flex flex-between flex-center">
-                <div>
-                  <div className="flex gap-sm flex-center mb-sm">
-                    <span className={`market-status ${order.action === 'BUY' ? 'market-status-open' : 'market-status-closed'}`}>{order.action}</span>
-                    <span className={order.side === 'YES' ? 'text-green' : 'text-red'}>{order.side}</span>
-                  </div>
-                  <div className="text-mono">{order.quantity - order.filled_quantity} / {order.quantity} @ {(order.price * 100).toFixed(0)}¢</div>
-                  <div className="text-muted" style={{ fontSize: '0.75rem' }}>Market: {order.market_id.slice(0, 8)}...</div>
-                </div>
-                <button onClick={() => handleCancelOrder(order.id)} className="btn btn-danger btn-sm">Cancel</button>
+                ))}
               </div>
-            </div>
-          ))}
+            )
+          )}
         </div>
       )}
     </div>

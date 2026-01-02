@@ -41,6 +41,15 @@ class MarketStatus(str, Enum):
     RESOLVED = "RESOLVED"
 
 
+class TransactionType(str, Enum):
+    SIGNUP_BONUS = "SIGNUP_BONUS"
+    DAILY_REWARD = "DAILY_REWARD"
+    TRADE_BUY = "TRADE_BUY"
+    TRADE_SELL = "TRADE_SELL"
+    MARKET_PAYOUT = "MARKET_PAYOUT"
+    ADMIN_ADJUSTMENT = "ADMIN_ADJUSTMENT"
+
+
 # =============================================================================
 # Models
 # =============================================================================
@@ -67,6 +76,7 @@ class User(Base):
     orders = relationship("Order", back_populates="user")
     positions = relationship("Position", back_populates="user")
     achievements = relationship("UserAchievement", back_populates="user")
+    transactions = relationship("Transaction", back_populates="user")
 
     __table_args__ = (
         CheckConstraint("balance >= 0", name="non_negative_balance"),
@@ -155,8 +165,8 @@ class Trade(Base):
 
     id = Column(String, primary_key=True)
     market_id = Column(String, ForeignKey("markets.id"), nullable=False)
-    buyer_order_id = Column(String, ForeignKey("orders.id"), nullable=False)
-    seller_order_id = Column(String, ForeignKey("orders.id"), nullable=False)
+    buyer_order_id = Column(String, nullable=True)
+    seller_order_id = Column(String, nullable=True)
     side = Column(SQLEnum(Side), nullable=False)
     price = Column(Float, nullable=False)
     quantity = Column(Integer, nullable=False)
@@ -189,3 +199,18 @@ class Position(Base):
         CheckConstraint("yes_shares >= 0", name="non_negative_yes"),
         CheckConstraint("no_shares >= 0", name="non_negative_no"),
     )
+
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(String, primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    type = Column(SQLEnum(TransactionType), nullable=False)
+    amount = Column(Float, nullable=False)
+    balance_after = Column(Float, nullable=False)
+    description = Column(String(500), nullable=True)
+    reference_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="transactions")

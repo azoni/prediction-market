@@ -83,6 +83,12 @@ class ApiService {
     return response.data;
   }
 
+  // Transactions
+  async getTransactions(limit = 50) {
+    const response = await this.client.get('/transactions', { params: { limit } });
+    return response.data;
+  }
+
   // Leaderboard
   async getLeaderboard(limit = 10) {
     const response = await this.client.get('/leaderboard', { params: { limit } });
@@ -96,17 +102,7 @@ class ApiService {
   }
 
   async getAchievements() {
-    const response = await this.client.get('/rewards/achievements');
-    return response.data;
-  }
-
-  async getMyAchievements() {
-    const response = await this.client.get('/rewards/achievements/me');
-    return response.data;
-  }
-
-  async getRewardStats() {
-    const response = await this.client.get('/rewards/stats');
+    const response = await this.client.get('/achievements');
     return response.data;
   }
 }

@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import (
-    User, Market, Order, Trade, Position,
-    Side, OrderType, OrderAction, OrderStatus, MarketStatus
+    User, Market, Order, Trade, Position, Transaction,
+    Side, OrderType, OrderAction, OrderStatus, MarketStatus, TransactionType
 )
 from engine import MatchingEngine, TradeResult
 from market_maker import MarketMakerBot, MarketMakerConfig
@@ -24,6 +24,12 @@ from services import (
     get_user_achievements,
     get_all_achievements,
     cancel_market_orders,
+    record_signup_bonus,
+    record_daily_reward,
+    record_trade_buy,
+    record_trade_sell,
+    record_admin_adjustment,
+    get_user_transactions,
 )
 from auth import get_current_user, get_current_admin, is_admin, verify_firebase_token
 
@@ -51,7 +57,6 @@ class MarketCreate(BaseModel):
 
 
 class MarketUpdate(BaseModel):
-    """For admin edits to markets."""
     question: Optional[str] = Field(None, min_length=10, max_length=500)
     description: Optional[str] = Field(None, max_length=2000)
     closes_at: Optional[datetime] = None
@@ -72,14 +77,9 @@ class ResolveRequest(BaseModel):
 
 
 class AdminBalanceAdjust(BaseModel):
-    """For admin balance adjustments."""
     user_id: str
     amount: float = Field(..., ge=-100000, le=100000)
     reason: str = Field(..., min_length=3, max_length=200)
-
-
-# Note: get_current_user is now imported from auth.py
-# It properly verifies Firebase tokens in production
 
 
 # =============================================================================
@@ -104,6 +104,11 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
         balance=1000.0,
     )
     db.add(user)
+    db.flush()
+    
+    # Record signup bonus transaction
+    record_signup_bonus(db, user)
+    
     db.commit()
 
     return {
@@ -121,9 +126,31 @@ def get_current_user_info(user: User = Depends(get_current_user)):
         "display_name": user.display_name,
         "email": user.email,
         "balance": user.balance,
-        "login_streak": user.login_streak,
-        "total_trades": user.total_trades,
     }
+
+
+# =============================================================================
+# Transaction Endpoints
+# =============================================================================
+
+@router.get("/transactions")
+def get_transactions(
+    limit: int = 50,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    transactions = get_user_transactions(db, user.id, limit)
+    return [
+        {
+            "id": tx.id,
+            "type": tx.type.value,
+            "amount": tx.amount,
+            "balance_after": tx.balance_after,
+            "description": tx.description,
+            "created_at": tx.created_at,
+        }
+        for tx in transactions
+    ]
 
 
 # =============================================================================
@@ -133,12 +160,13 @@ def get_current_user_info(user: User = Depends(get_current_user)):
 @router.get("/markets")
 def list_markets(
     status: Optional[str] = None,
+    limit: int = 50,
     db: Session = Depends(get_db),
 ):
     query = db.query(Market)
     if status:
         query = query.filter(Market.status == MarketStatus(status))
-    markets = query.order_by(Market.created_at.desc()).limit(50).all()
+    markets = query.order_by(Market.created_at.desc()).limit(limit).all()
 
     results = []
     for market in markets:
@@ -146,11 +174,17 @@ def list_markets(
         results.append({
             "id": market.id,
             "question": market.question,
+            "description": market.description,
+            "creator_id": market.creator_id,
             "status": market.status.value,
-            "created_at": market.created_at,
-            "yes_price": snapshot["yes"]["best_bid"],
-            "no_price": snapshot["no"]["best_bid"],
             "resolved_outcome": market.resolved_outcome,
+            "resolved_at": market.resolved_at,
+            "closes_at": market.closes_at,
+            "created_at": market.created_at,
+            "yes_bid": snapshot["yes"]["best_bid"],
+            "yes_ask": snapshot["yes"]["best_ask"],
+            "no_bid": snapshot["no"]["best_bid"],
+            "no_ask": snapshot["no"]["best_ask"],
         })
 
     return results
@@ -179,8 +213,11 @@ def create_market(
 
     db.commit()
 
-    # Initialize market maker quotes and save to database
-    _initialize_market_maker_orders(market_id, db)
+    # Initialize market maker quotes
+    for side in ["YES", "NO"]:
+        orders = market_maker.generate_orders(market_id, side)
+        for order_params in orders:
+            matching_engine.process_order(**order_params)
 
     return {
         "id": market_id,
@@ -197,7 +234,8 @@ def get_market(market_id: str, db: Session = Depends(get_db)):
 
     # Ensure market maker has liquidity on this market
     if market.status == MarketStatus.OPEN:
-        _refresh_market_maker_quotes(market_id, db)
+        for side in ["YES", "NO"]:
+            _refresh_market_maker_quotes(market_id, side, db)
 
     book_snapshot = matching_engine.get_book_snapshot(market_id)
 
@@ -242,7 +280,7 @@ def resolve_market_endpoint(
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
 
-    if market.creator_id != user.id and not is_admin(user):
+    if market.creator_id != user.id:
         raise HTTPException(status_code=403, detail="Only creator can resolve")
 
     if market.status == MarketStatus.RESOLVED:
@@ -316,7 +354,7 @@ def place_order(
         status=OrderStatus.OPEN,
     )
     db.add(order)
-    db.flush()  # Get the order ID into the database before matching
+    db.flush()  # Ensure order has ID before matching
 
     result = matching_engine.process_order(
         market_id=order_data.market_id,
@@ -343,10 +381,12 @@ def place_order(
     elif result.filled_quantity > 0:
         order.status = OrderStatus.PARTIAL
     elif order_data.order_type == "MARKET":
-        # Market orders that don't fill should be cancelled, not left open
         order.status = OrderStatus.CANCELLED
 
     db.commit()
+
+    if result.trades:
+        _refresh_market_maker_quotes(order_data.market_id, order_data.side, db)
 
     return {
         "order_id": order_id,
@@ -355,6 +395,7 @@ def place_order(
         "remaining_quantity": result.remaining_quantity,
         "trades": len(result.trades),
         "average_price": result.average_price,
+        "added_to_book": result.added_to_book,
         "achievements_earned": achievements_earned,
     }
 
@@ -375,7 +416,7 @@ def cancel_order(
     if order.status not in [OrderStatus.OPEN, OrderStatus.PARTIAL]:
         raise HTTPException(status_code=400, detail="Order not cancellable")
 
-    # Try to remove from in-memory order book (may not exist if server restarted)
+    # Try to cancel from matching engine (may fail if server restarted)
     if order.price is not None:
         matching_engine.cancel_order(
             market_id=order.market_id,
@@ -392,14 +433,18 @@ def cancel_order(
 
 
 @router.get("/orders")
-def get_user_orders(
+def get_orders(
     status: Optional[str] = None,
+    market_id: Optional[str] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = db.query(Order).filter(Order.user_id == user.id)
     if status:
         query = query.filter(Order.status == OrderStatus(status))
+    if market_id:
+        query = query.filter(Order.market_id == market_id)
+
     orders = query.order_by(Order.created_at.desc()).limit(100).all()
 
     return [
@@ -428,32 +473,42 @@ def get_positions(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    def price_getter(market_id: str):
-        snapshot = matching_engine.get_book_snapshot(market_id)
-        yes_price = snapshot["yes"]["best_bid"] or 0.5
-        no_price = snapshot["no"]["best_bid"] or 0.5
-        return yes_price, no_price
+    positions = get_user_positions(db, user.id)
+    result = []
 
-    positions = get_user_positions(db, user.id, price_getter)
-
-    results = []
     for pos in positions:
         market = db.query(Market).filter(Market.id == pos.market_id).first()
-        results.append({
+        if not market:
+            continue
+
+        snapshot = matching_engine.get_book_snapshot(pos.market_id)
+
+        yes_price = snapshot["yes"]["best_bid"] or 0.5
+        no_price = snapshot["no"]["best_bid"] or 0.5
+
+        yes_value = pos.yes_shares * yes_price
+        no_value = pos.no_shares * no_price
+        total_value = yes_value + no_value
+        total_cost = pos.yes_cost_basis + pos.no_cost_basis
+        unrealized_pnl = total_value - total_cost
+
+        result.append({
             "market_id": pos.market_id,
-            "question": market.question if market else "Unknown",
-            "market_status": market.status.value if market else "UNKNOWN",
+            "question": market.question,
+            "status": market.status.value,
             "yes_shares": pos.yes_shares,
             "no_shares": pos.no_shares,
             "yes_avg_price": pos.yes_avg_price,
             "no_avg_price": pos.no_avg_price,
-            "yes_current_value": pos.yes_current_value,
-            "no_current_value": pos.no_current_value,
-            "unrealized_pnl": pos.unrealized_pnl,
+            "yes_cost_basis": pos.yes_cost_basis,
+            "no_cost_basis": pos.no_cost_basis,
             "realized_pnl": pos.realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "current_yes_price": yes_price,
+            "current_no_price": no_price,
         })
 
-    return results
+    return result
 
 
 @router.get("/positions/{market_id}")
@@ -474,8 +529,8 @@ def get_position(
             "no_shares": 0,
             "yes_avg_price": 0,
             "no_avg_price": 0,
-            "unrealized_pnl": 0,
             "realized_pnl": 0,
+            "unrealized_pnl": 0,
         }
 
     snapshot = matching_engine.get_book_snapshot(market_id)
@@ -484,8 +539,9 @@ def get_position(
 
     yes_value = position.yes_shares * yes_price
     no_value = position.no_shares * no_price
+    total_value = yes_value + no_value
     total_cost = position.yes_cost_basis + position.no_cost_basis
-    unrealized = (yes_value + no_value) - total_cost
+    unrealized_pnl = total_value - total_cost
 
     return {
         "market_id": market_id,
@@ -493,18 +549,21 @@ def get_position(
         "no_shares": position.no_shares,
         "yes_avg_price": position.yes_avg_price,
         "no_avg_price": position.no_avg_price,
-        "unrealized_pnl": round(unrealized, 2),
+        "yes_cost_basis": position.yes_cost_basis,
+        "no_cost_basis": position.no_cost_basis,
         "realized_pnl": position.realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
     }
 
 
 # =============================================================================
-# Leaderboard
+# Leaderboard Endpoints
 # =============================================================================
 
 @router.get("/leaderboard")
-def leaderboard(limit: int = 50, db: Session = Depends(get_db)):
-    return get_leaderboard(db, limit)
+def get_leaderboard_endpoint(limit: int = 20, db: Session = Depends(get_db)):
+    leaders = get_leaderboard(db, limit)
+    return leaders
 
 
 # =============================================================================
@@ -517,6 +576,17 @@ def claim_daily_reward(
     db: Session = Depends(get_db),
 ):
     result = process_daily_login(db, user)
+    
+    # Record transaction if reward was claimed
+    if not result.already_claimed:
+        record_daily_reward(
+            db=db,
+            user=user,
+            base_reward=result.base_reward,
+            streak_bonus=result.streak_bonus,
+            streak_days=result.new_streak,
+        )
+    
     db.commit()
 
     return {
@@ -530,38 +600,41 @@ def claim_daily_reward(
     }
 
 
-@router.get("/rewards/achievements")
-def list_achievements(
+@router.get("/achievements")
+def get_achievements_endpoint(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return get_all_achievements(db, user.id)
+    user_achievements = get_user_achievements(db, user.id)
+    all_achievements = get_all_achievements(db)
 
-
-@router.get("/rewards/achievements/me")
-def get_my_achievements(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    return get_user_achievements(db, user.id)
-
-
-@router.get("/rewards/stats")
-def get_reward_stats(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    all_achievements = get_all_achievements(db, user.id)
-    earned_achievements = [a for a in all_achievements if a["earned"]]
+    earned_ids = {ua.achievement_id for ua in user_achievements}
 
     return {
-        "balance": user.balance,
-        "login_streak": user.login_streak,
-        "total_trades": user.total_trades,
-        "total_markets_created": user.total_markets_created,
-        "total_correct_predictions": user.total_correct_predictions,
-        "achievements_earned": len(earned_achievements),
-        "achievements_total": len(all_achievements),
+        "earned": [
+            {
+                "id": ua.achievement.id,
+                "name": ua.achievement.name,
+                "description": ua.achievement.description,
+                "icon": ua.achievement.icon,
+                "reward": ua.achievement.reward,
+                "category": ua.achievement.category,
+                "earned_at": ua.earned_at,
+            }
+            for ua in user_achievements
+        ],
+        "available": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "description": a.description,
+                "icon": a.icon,
+                "reward": a.reward,
+                "category": a.category,
+            }
+            for a in all_achievements
+            if a.id not in earned_ids
+        ],
     }
 
 
@@ -570,7 +643,7 @@ def get_reward_stats(
 # =============================================================================
 
 def _process_trade(db: Session, trade_result: TradeResult, current_user: User):
-    """Process a trade result: save trade, update positions, update balances."""
+    """Process a trade result: save trade, update positions, update balances, record transactions."""
     trade = Trade(
         id=trade_result.trade_id,
         market_id=trade_result.market_id,
@@ -584,24 +657,41 @@ def _process_trade(db: Session, trade_result: TradeResult, current_user: User):
     )
     db.add(trade)
 
-    # Update positions (this function skips market maker internally)
     process_trade_for_positions(
         db, trade, trade_result.buyer_user_id, trade_result.seller_user_id
     )
 
-    # Update buyer balance (deduct cost) - skip market maker
+    # Update buyer balance and record transaction
     if trade_result.buyer_user_id != MarketMakerBot.USER_ID:
         buyer = db.query(User).filter(User.id == trade_result.buyer_user_id).first()
         if buyer:
             buyer.balance = round(buyer.balance - trade_result.total, 4)
+            record_trade_buy(
+                db=db,
+                user=buyer,
+                amount=trade_result.total,
+                trade_id=trade_result.trade_id,
+                side=trade_result.side,
+                quantity=trade_result.quantity,
+                price=trade_result.price,
+            )
 
-    # Update seller balance (add proceeds) - skip market maker
+    # Update seller balance and record transaction
     if trade_result.seller_user_id != MarketMakerBot.USER_ID:
         seller = db.query(User).filter(User.id == trade_result.seller_user_id).first()
         if seller:
             seller.balance = round(seller.balance + trade_result.total, 4)
+            record_trade_sell(
+                db=db,
+                user=seller,
+                amount=trade_result.total,
+                trade_id=trade_result.trade_id,
+                side=trade_result.side,
+                quantity=trade_result.quantity,
+                price=trade_result.price,
+            )
 
-    # Notify market maker of trades it was involved in
+    # Notify market maker
     if trade_result.buyer_user_id == MarketMakerBot.USER_ID:
         market_maker.on_trade(
             trade_result.market_id, trade_result.side, "BUY", trade_result.quantity
@@ -612,80 +702,22 @@ def _process_trade(db: Session, trade_result: TradeResult, current_user: User):
         )
 
 
-def _initialize_market_maker_orders(market_id: str, db: Session):
-    """Create initial market maker orders for a new market and save to database."""
-    for side in ["YES", "NO"]:
+def _refresh_market_maker_quotes(market_id: str, side: str, db: Session):
+    snapshot = matching_engine.get_book_snapshot(market_id)
+    book = snapshot["yes"] if side == "YES" else snapshot["no"]
+
+    if book["spread"] is None or book["spread"] > 0.10:
         orders = market_maker.generate_orders(market_id, side)
         for order_params in orders:
-            # Save order to database first
-            order = Order(
-                id=order_params["order_id"],
-                user_id=MarketMakerBot.USER_ID,
-                market_id=order_params["market_id"],
-                side=Side(order_params["side"]),
-                action=OrderAction(order_params["action"]),
-                order_type=OrderType(order_params["order_type"]),
-                price=order_params["price"],
-                quantity=order_params["quantity"],
-                filled_quantity=0,
-                status=OrderStatus.OPEN,
-                is_market_maker=True,
-            )
-            db.add(order)
-            
-            # Then add to matching engine
             matching_engine.process_order(**order_params)
-    
-    db.commit()
-
-
-def _refresh_market_maker_quotes(market_id: str, db: Session):
-    """Refresh market maker quotes if spread is too wide."""
-    snapshot = matching_engine.get_book_snapshot(market_id)
-    
-    for side in ["YES", "NO"]:
-        book = snapshot["yes"] if side == "YES" else snapshot["no"]
-        
-        # Add liquidity if spread is too wide or no orders exist
-        if book["spread"] is None or book["spread"] > 0.10:
-            orders = market_maker.generate_orders(market_id, side)
-            for order_params in orders:
-                # Check if this order already exists
-                existing = db.query(Order).filter(
-                    Order.id == order_params["order_id"]
-                ).first()
-                
-                if not existing:
-                    # Save order to database first
-                    order = Order(
-                        id=order_params["order_id"],
-                        user_id=MarketMakerBot.USER_ID,
-                        market_id=order_params["market_id"],
-                        side=Side(order_params["side"]),
-                        action=OrderAction(order_params["action"]),
-                        order_type=OrderType(order_params["order_type"]),
-                        price=order_params["price"],
-                        quantity=order_params["quantity"],
-                        filled_quantity=0,
-                        status=OrderStatus.OPEN,
-                        is_market_maker=True,
-                    )
-                    db.add(order)
-                    
-                    # Then add to matching engine
-                    matching_engine.process_order(**order_params)
-            
-            db.commit()
 
 
 # =============================================================================
 # Admin Endpoints
 # =============================================================================
-# These require admin privileges. Add your email to ADMIN_EMAILS in auth.py
 
 @router.get("/admin/status")
 def admin_status(admin: User = Depends(get_current_admin)):
-    """Check if current user has admin privileges."""
     return {
         "is_admin": True,
         "user_id": admin.id,
@@ -699,7 +731,6 @@ def admin_list_users(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """List all users (admin only)."""
     users = db.query(User).order_by(User.created_at.desc()).limit(limit).all()
     return [
         {
@@ -721,12 +752,6 @@ def admin_adjust_balance(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """
-    Adjust a user's balance (admin only).
-    
-    Use positive amounts to add funds, negative to remove.
-    Requires a reason for audit trail.
-    """
     target_user = db.query(User).filter(User.id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -741,11 +766,16 @@ def admin_adjust_balance(
         )
     
     target_user.balance = round(new_balance, 2)
-    db.commit()
     
-    # In production, you'd log this to an audit table
-    print(f"ADMIN BALANCE ADJUSTMENT: {admin.email} adjusted {target_user.display_name}'s balance "
-          f"from {old_balance} to {new_balance}. Reason: {adjustment.reason}")
+    # Record the admin adjustment transaction
+    record_admin_adjustment(
+        db=db,
+        user=target_user,
+        amount=adjustment.amount,
+        reason=adjustment.reason,
+    )
+    
+    db.commit()
     
     return {
         "user_id": user_id,
@@ -764,7 +794,6 @@ def admin_update_market(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Update a market's details (admin only)."""
     market = db.query(Market).filter(Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
@@ -796,12 +825,6 @@ def admin_delete_market(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """
-    Delete a market (admin only).
-    
-    By default, refunds all users their cost basis for positions in this market.
-    Set refund=false to delete without refunding (use carefully).
-    """
     market = db.query(Market).filter(Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
@@ -809,17 +832,14 @@ def admin_delete_market(
     if market.status == MarketStatus.RESOLVED:
         raise HTTPException(status_code=400, detail="Cannot delete resolved market")
     
-    # Cancel all open orders
     cancelled_orders = cancel_market_orders(db, market_id)
     
-    # Refund positions if requested
     refund_total = 0.0
     users_refunded = 0
     
     if refund:
         positions = db.query(Position).filter(Position.market_id == market_id).all()
         for position in positions:
-            # Refund cost basis
             refund_amount = position.yes_cost_basis + position.no_cost_basis
             if refund_amount > 0:
                 user = db.query(User).filter(User.id == position.user_id).first()
@@ -828,19 +848,16 @@ def admin_delete_market(
                     refund_total += refund_amount
                     users_refunded += 1
             
-            # Clear position
             position.yes_shares = 0
             position.no_shares = 0
             position.yes_cost_basis = 0
             position.no_cost_basis = 0
     
-    # Mark market as closed (we keep the data for history)
     market.status = MarketStatus.CLOSED
     market.description = f"[DELETED BY ADMIN] {market.description or ''}"
     
     db.commit()
     
-    # Remove from matching engine
     if market_id in matching_engine.books:
         del matching_engine.books[market_id]
     
@@ -860,12 +877,6 @@ def admin_resolve_market(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """
-    Resolve any market (admin only).
-    
-    Unlike the regular resolve endpoint, admins can resolve any market,
-    not just ones they created.
-    """
     market = db.query(Market).filter(Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
@@ -889,14 +900,12 @@ def admin_stats(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Get platform statistics (admin only)."""
     total_users = db.query(User).count()
     total_markets = db.query(Market).count()
     open_markets = db.query(Market).filter(Market.status == MarketStatus.OPEN).count()
     total_trades = db.query(Trade).count()
     total_orders = db.query(Order).count()
     
-    # Sum of all user balances
     from sqlalchemy import func
     total_balance = db.query(func.sum(User.balance)).scalar() or 0
     

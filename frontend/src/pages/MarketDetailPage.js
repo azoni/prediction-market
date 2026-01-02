@@ -22,13 +22,12 @@ function MarketDetailPage() {
       setOrderBook(data.order_book);
       setRecentTrades(data.recent_trades);
       
-      // Only load position if logged in
       if (user) {
         try {
           const pos = await api.getPosition(marketId);
           setPosition(pos);
         } catch (e) {
-          // Ignore position errors for non-auth
+          // Ignore position errors
         }
       }
     } catch (err) {
@@ -73,7 +72,7 @@ function MarketDetailPage() {
   return (
     <div>
       <div className="flex justify-between items-start mb-lg">
-        <div>
+        <div style={{ flex: 1 }}>
           <span className={`market-status market-status-${market.status.toLowerCase()}`}>
             {market.status}
           </span>
@@ -83,7 +82,7 @@ function MarketDetailPage() {
           )}
         </div>
         {canResolve && (
-          <div className="flex gap-sm">
+          <div className="flex gap-sm" style={{ marginLeft: '1rem' }}>
             <button onClick={() => handleResolve(true)} className="btn btn-success btn-sm">
               Resolve YES
             </button>
@@ -250,13 +249,11 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
   const bestAsk = book?.best_ask;
   const bestBid = book?.best_bid;
 
-  // Calculate estimated cost/proceeds
   const estimatedPrice = orderType === 'MARKET' 
     ? (action === 'BUY' ? (bestAsk || 0.99) : (bestBid || 0.01))
     : price;
   const estimatedTotal = quantity * estimatedPrice;
 
-  // Calculate max shares user can buy/sell
   const maxBuyShares = Math.floor(userBalance / (orderType === 'MARKET' ? (bestAsk || 0.99) : price));
   const maxSellShares = side === 'YES' ? (position?.yes_shares || 0) : (position?.no_shares || 0);
   const maxShares = action === 'BUY' ? maxBuyShares : maxSellShares;
@@ -293,7 +290,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
 
   return (
     <div>
-      {/* Side Selection */}
       <div className="grid grid-2 gap-sm mb-md">
         <button
           className={`btn ${side === 'YES' ? 'btn-success' : 'btn-secondary'}`}
@@ -309,17 +305,16 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         </button>
       </div>
 
-      {/* Action Selection */}
       <div className="grid grid-2 gap-sm mb-md">
         <button
-          className={`btn btn-sm ${action === 'BUY' ? 'btn-primary' : 'btn-secondary'}`}
+          className={`btn btn-sm ${action === 'BUY' ? '' : 'btn-secondary'}`}
           onClick={() => setAction('BUY')}
           style={action === 'BUY' ? { background: 'var(--accent-cyan)', color: 'black' } : {}}
         >
           Buy
         </button>
         <button
-          className={`btn btn-sm ${action === 'SELL' ? 'btn-primary' : 'btn-secondary'}`}
+          className={`btn btn-sm ${action === 'SELL' ? '' : 'btn-secondary'}`}
           onClick={() => setAction('SELL')}
           style={action === 'SELL' ? { background: 'var(--accent-purple)' } : {}}
         >
@@ -327,7 +322,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         </button>
       </div>
 
-      {/* Order Type */}
       <div className="input-group">
         <label className="input-label">Order Type</label>
         <select
@@ -340,7 +334,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         </select>
       </div>
 
-      {/* Price (for limit orders) */}
       {orderType === 'LIMIT' && (
         <div className="input-group">
           <label className="input-label">Price (¢)</label>
@@ -355,7 +348,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         </div>
       )}
 
-      {/* Quantity */}
       <div className="input-group">
         <label className="input-label">Shares</label>
         <input
@@ -368,7 +360,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         />
       </div>
 
-      {/* Preset Amounts */}
       <div className="flex gap-sm mb-md" style={{ flexWrap: 'wrap' }}>
         {presetAmounts.map((amt) => (
           <button
@@ -390,7 +381,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         </button>
       </div>
 
-      {/* Cost/Proceeds Estimate */}
       <div className="mb-md p-sm" style={{ background: 'var(--bg-secondary)', borderRadius: '8px' }}>
         <div className="flex justify-between text-sm">
           <span className="text-muted">Est. Price:</span>
@@ -412,7 +402,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         )}
       </div>
 
-      {/* Submit Button */}
       <button
         className={`btn btn-lg w-full ${action === 'BUY' ? 'btn-success' : 'btn-danger'}`}
         onClick={handleSubmit}
@@ -421,7 +410,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         {submitting ? 'Placing...' : `${action} ${side}`}
       </button>
 
-      {/* Validation Messages */}
       {action === 'BUY' && estimatedTotal > userBalance && (
         <p className="text-red text-sm mt-sm">Insufficient balance</p>
       )}
@@ -429,7 +417,6 @@ function OrderForm({ marketId, orderBook, position, userBalance, onOrderPlaced }
         <p className="text-red text-sm mt-sm">You only have {maxSellShares} {side} shares</p>
       )}
 
-      {/* Result */}
       {result && (
         <div className={`mt-md ${result.success ? 'text-green' : 'text-red'}`}>
           <div>{result.message}</div>

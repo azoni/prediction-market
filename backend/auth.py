@@ -1,113 +1,27 @@
 """
-Authentication & Authorization Module
+Authentication module for DuMarket.
 
-Handles:
-1. Firebase ID token verification (not just trusting client-sent UIDs)
-2. Admin role checking
-3. User session management
-
-Security: NEVER trust client-sent user IDs. Always verify the Firebase JWT.
+Handles Firebase token verification and admin authorization.
 """
 
 import os
+import json
+import base64
 from typing import Optional
-
 from fastapi import Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import User
 
-# Try to import firebase-admin, but don't fail if not installed
-try:
-    import firebase_admin
-    from firebase_admin import auth as firebase_auth, credentials
-    FIREBASE_AVAILABLE = True
-except ImportError:
-    FIREBASE_AVAILABLE = False
-    firebase_admin = None
-
-
 # =============================================================================
-# Firebase Admin Initialization
+# Admin Configuration
 # =============================================================================
 
-# List of admin emails - ADD YOUR EMAIL HERE
 ADMIN_EMAILS = [
-    # "your-email@gmail.com",  # <-- Add your Google email
     "charltonuw@gmail.com",
+    # Add more admin emails here
 ]
-
-# List of admin user IDs (Firebase UIDs) - alternative to email
-ADMIN_USER_IDS = [
-    # "firebase-uid-here",
-]
-
-# Track if we're in dev mode (no Firebase verification)
-_dev_mode = True
-
-
-def init_firebase():
-    """
-    Initialize Firebase Admin SDK.
-    
-    For local development: Set GOOGLE_APPLICATION_CREDENTIALS env var
-    to path of your service account JSON file.
-    
-    For production (Render/etc): Set FIREBASE_CREDENTIALS env var
-    to the JSON content of your service account.
-    """
-    global _dev_mode
-    
-    if not FIREBASE_AVAILABLE:
-        print("⚠️  firebase-admin not installed. Running in DEV MODE.")
-        print("⚠️  Auth tokens will NOT be verified. Install firebase-admin for production.")
-        _dev_mode = True
-        return
-    
-    if firebase_admin._apps:
-        _dev_mode = False
-        return  # Already initialized
-    
-    # Option 1: Credentials from environment variable (for production)
-    creds_json = os.getenv("FIREBASE_CREDENTIALS")
-    if creds_json:
-        import json
-        creds_dict = json.loads(creds_json)
-        cred = credentials.Certificate(creds_dict)
-        firebase_admin.initialize_app(cred)
-        print("Firebase Admin initialized from FIREBASE_CREDENTIALS env var")
-        _dev_mode = False
-        return
-    
-    # Option 2: Credentials file path (for local development)
-    creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if creds_path and os.path.exists(creds_path):
-        cred = credentials.Certificate(creds_path)
-        firebase_admin.initialize_app(cred)
-        print(f"Firebase Admin initialized from {creds_path}")
-        _dev_mode = False
-        return
-    
-    # Option 3: Default credentials (for Google Cloud environments)
-    try:
-        firebase_admin.initialize_app()
-        print("Firebase Admin initialized with default credentials")
-        _dev_mode = False
-        return
-    except Exception:
-        pass
-    
-    # If we get here, Firebase is not configured - run in dev mode
-    print("⚠️  WARNING: Firebase Admin not configured. Running in DEV MODE.")
-    print("⚠️  Auth tokens will NOT be verified. Do not use in production!")
-    _dev_mode = True
-
-
-def is_dev_mode() -> bool:
-    """Check if running without Firebase verification."""
-    return _dev_mode
-
 
 # =============================================================================
 # Token Verification
@@ -115,186 +29,87 @@ def is_dev_mode() -> bool:
 
 def decode_jwt_payload(token: str) -> dict:
     """
-    Decode a JWT payload without verification.
-    JWTs are base64-encoded JSON in format: header.payload.signature
-    We just need the payload (middle part) to get user info.
-    """
-    import base64
-    import json
+    Decode the payload from a JWT token without verification.
     
+    Note: This does NOT verify the signature. In production with sensitive data,
+    you should use firebase-admin SDK for proper verification.
+    """
     try:
-        # Split the JWT into parts
         parts = token.split(".")
         if len(parts) != 3:
-            return None
+            raise ValueError("Invalid JWT format")
         
-        # Get the payload (middle part)
         payload = parts[1]
-        
-        # Add padding if needed (base64 requires padding to multiple of 4)
+        # Add padding if needed
         padding = 4 - len(payload) % 4
         if padding != 4:
             payload += "=" * padding
         
-        # Decode from base64url (JWT uses url-safe base64)
         decoded_bytes = base64.urlsafe_b64decode(payload)
-        decoded_str = decoded_bytes.decode("utf-8")
-        
-        # Parse JSON
-        return json.loads(decoded_str)
-    except Exception:
-        return None
+        return json.loads(decoded_bytes.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(f"Failed to decode JWT: {e}")
 
 
-def verify_firebase_token(id_token: str) -> dict:
+def verify_firebase_token(token: str) -> dict:
     """
     Verify a Firebase ID token and return the decoded claims.
     
-    Returns dict with: uid, email, name, picture, etc.
-    Raises HTTPException if token is invalid.
+    In dev mode, just decodes without cryptographic verification.
     """
-    if is_dev_mode():
-        # In dev mode, decode the JWT without verifying signature
-        # This extracts the real user ID but doesn't verify authenticity
-        # WARNING: Not secure for production - install firebase-admin for real verification
-        
-        decoded = decode_jwt_payload(id_token)
-        if decoded:
-            return {
-                "uid": decoded.get("user_id") or decoded.get("sub"),
-                "email": decoded.get("email"),
-                "name": decoded.get("name"),
-            }
-        
-        # If it's not a valid JWT format, it might be a plain UID (local testing)
-        if len(id_token) < 50 and "." not in id_token:
-            return {
-                "uid": id_token,
-                "email": None,
-                "name": None,
-            }
-        
-        raise HTTPException(status_code=401, detail="Invalid token format")
-    
-    try:
-        decoded = firebase_auth.verify_id_token(id_token)
-        return decoded
-    except firebase_auth.InvalidIdTokenError:
-        raise HTTPException(status_code=401, detail="Invalid authentication token")
-    except firebase_auth.ExpiredIdTokenError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except firebase_auth.RevokedIdTokenError:
-        raise HTTPException(status_code=401, detail="Token has been revoked")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
-
-
-# =============================================================================
-# Authorization Helpers
-# =============================================================================
-
-def is_admin(user: User) -> bool:
-    """Check if a user has admin privileges."""
-    # Check by user ID
-    if user.id in ADMIN_USER_IDS:
-        return True
-    
-    # Check by email
-    if user.email and user.email.lower() in [e.lower() for e in ADMIN_EMAILS]:
-        return True
-    
-    # Check database flag (if we add one later)
-    if hasattr(user, 'is_admin') and user.is_admin:
-        return True
-    
-    return False
-
-
-def require_admin(user: User) -> None:
-    """Raise 403 if user is not an admin."""
-    if not is_admin(user):
-        raise HTTPException(
-            status_code=403,
-            detail="Admin privileges required"
-        )
+    return decode_jwt_payload(token)
 
 
 # =============================================================================
 # FastAPI Dependencies
 # =============================================================================
 
-async def get_current_user(
+def get_current_user(
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ) -> User:
     """
-    FastAPI dependency to get the authenticated user.
+    FastAPI dependency to get the current authenticated user.
     
-    Verifies the Firebase ID token from the Authorization header
-    and returns the corresponding User from our database.
+    Expects: Authorization: Bearer <firebase_id_token>
     """
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
     
-    # Parse "Bearer <token>" format
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+    
+    token = authorization[7:]  # Remove "Bearer " prefix
+    
     try:
-        scheme, token = authorization.split(" ", 1)
-        if scheme.lower() != "bearer":
-            raise HTTPException(status_code=401, detail="Invalid auth scheme. Use 'Bearer <token>'")
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid authorization header format")
-    
-    # Verify the token
-    claims = verify_firebase_token(token)
-    user_id = claims["uid"]
-    
-    # Get user from database
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found. Please register first.")
-    
-    return user
+        claims = verify_firebase_token(token)
+        user_id = claims.get("user_id") or claims.get("sub") or claims.get("uid")
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token: no user ID")
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return user
+        
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
 
 
-async def get_current_admin(
+def is_admin(user: User) -> bool:
+    """Check if a user has admin privileges."""
+    return user.email in ADMIN_EMAILS
+
+
+def get_current_admin(
     user: User = Depends(get_current_user),
 ) -> User:
     """
-    FastAPI dependency to get an authenticated admin user.
-    
-    Raises 403 if the user is not an admin.
+    FastAPI dependency to get the current user and verify admin status.
     """
-    require_admin(user)
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return user
-
-
-async def get_optional_user(
-    authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db),
-) -> Optional[User]:
-    """
-    FastAPI dependency that returns the user if authenticated, None otherwise.
-    
-    Use this for endpoints that work for both authenticated and anonymous users.
-    """
-    if not authorization:
-        return None
-    
-    try:
-        return await get_current_user(authorization, db)
-    except HTTPException:
-        return None
-
-
-# =============================================================================
-# Initialization
-# =============================================================================
-
-def setup_auth():
-    """Call this on app startup to initialize Firebase."""
-    global _dev_mode
-    try:
-        init_firebase()
-    except Exception as e:
-        print(f"Firebase init failed: {e}")
-        _dev_mode = True
