@@ -113,48 +113,44 @@ def is_dev_mode() -> bool:
 # Token Verification
 # =============================================================================
 
-def verify_firebase_token(id_token: str) -> dict:
+def decode_jwt_payload(token: str) -> dict:
     """
-    Verify a Firebase ID token and return the decoded claims.
+    Decode a JWT payload without verification.
+    JWTs are base64-encoded JSON in format: header.payload.signature
+    """
+    import base64
+    import json
     
-    Returns dict with: uid, email, name, picture, etc.
-    Raises HTTPException if token is invalid.
-    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        
+        payload = parts[1]
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += "=" * padding
+        
+        decoded_bytes = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded_bytes.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def verify_firebase_token(id_token: str) -> dict:
     if is_dev_mode():
-        # In dev mode, decode the JWT without verifying signature
-        # This extracts the real user ID but doesn't verify authenticity
-        # WARNING: Not secure for production - install firebase-admin for real verification
-        try:
-            import jwt
-            # Decode without verification - just to extract claims
-            decoded = jwt.decode(id_token, options={"verify_signature": False})
+        decoded = decode_jwt_payload(id_token)
+        if decoded:
             return {
                 "uid": decoded.get("user_id") or decoded.get("sub"),
                 "email": decoded.get("email"),
                 "name": decoded.get("name"),
             }
-        except Exception as e:
-            # If it's not a valid JWT format, it might be a plain UID (local testing)
-            # Only allow this for very short strings (UIDs are typically 28 chars)
-            if len(id_token) < 50 and "." not in id_token:
-                return {
-                    "uid": id_token,
-                    "email": None,
-                    "name": None,
-                }
-            raise HTTPException(status_code=401, detail=f"Invalid token format: {str(e)}")
-    
-    try:
-        decoded = firebase_auth.verify_id_token(id_token)
-        return decoded
-    except firebase_auth.InvalidIdTokenError:
-        raise HTTPException(status_code=401, detail="Invalid authentication token")
-    except firebase_auth.ExpiredIdTokenError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except firebase_auth.RevokedIdTokenError:
-        raise HTTPException(status_code=401, detail="Token has been revoked")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+        
+        if len(id_token) < 50 and "." not in id_token:
+            return {"uid": id_token, "email": None, "name": None}
+        
+        raise HTTPException(status_code=401, detail="Invalid token format")
 
 
 # =============================================================================
