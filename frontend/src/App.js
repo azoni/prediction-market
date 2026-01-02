@@ -11,10 +11,14 @@ import LeaderboardPage from './pages/LeaderboardPage';
 import AchievementsPage from './pages/AchievementsPage';
 import AdminPage from './pages/AdminPage';
 
+// Admin emails - keep in sync with backend/auth.py
+const ADMIN_EMAILS = ['charltonuw@gmail.com'];
+
 function Navigation() {
   const { user, signOut } = useAuth();
   const location = useLocation();
   const isActive = (path) => location.pathname.startsWith(path);
+  const isAdmin = user && ADMIN_EMAILS.includes(user.email);
 
   return (
     <nav className="nav">
@@ -27,10 +31,10 @@ function Navigation() {
         )}
         <Link to="/leaderboard" className={`nav-link ${isActive('/leaderboard') ? 'active' : ''}`}>Leaderboard</Link>
         {user && (
-          <>
-            <Link to="/achievements" className={`nav-link ${isActive('/achievements') ? 'active' : ''}`}>Achievements</Link>
-            <Link to="/admin" className={`nav-link ${isActive('/admin') ? 'active' : ''}`}>🔧</Link>
-          </>
+          <Link to="/achievements" className={`nav-link ${isActive('/achievements') ? 'active' : ''}`}>Achievements</Link>
+        )}
+        {isAdmin && (
+          <Link to="/admin" className={`nav-link ${isActive('/admin') ? 'active' : ''}`}>🔧</Link>
         )}
       </div>
       <div className="nav-user">
@@ -57,6 +61,21 @@ function ProtectedRoute({ children }) {
 
   if (!user) {
     return <Navigate to="/login" />;
+  }
+
+  return children;
+}
+
+function AdminRoute({ children }) {
+  const { user, loading } = useAuth();
+  const isAdmin = user && ADMIN_EMAILS.includes(user.email);
+
+  if (loading) {
+    return <div className="text-center mt-lg"><span className="spinner"></span></div>;
+  }
+
+  if (!user || !isAdmin) {
+    return <Navigate to="/markets" />;
   }
 
   return children;
@@ -96,8 +115,10 @@ function App() {
         <Route path="/achievements" element={
           <ProtectedRoute><AchievementsPage /></ProtectedRoute>
         } />
+        
+        {/* Admin only */}
         <Route path="/admin" element={
-          <ProtectedRoute><AdminPage /></ProtectedRoute>
+          <AdminRoute><AdminPage /></AdminRoute>
         } />
 
         {/* Default redirect */}

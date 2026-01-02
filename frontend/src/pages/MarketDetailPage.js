@@ -71,25 +71,34 @@ function MarketDetailPage() {
 
   return (
     <div>
-      <div className="flex justify-between items-start mb-lg">
-        <div style={{ flex: 1 }}>
+      {/* Header */}
+      <div className="mb-lg">
+        <div className="flex justify-between items-center mb-sm">
           <span className={`market-status market-status-${market.status.toLowerCase()}`}>
             {market.status}
           </span>
-          <h1 style={{ marginTop: '0.5rem' }}>{market.question}</h1>
-          {market.description && (
-            <p className="text-muted mt-sm">{market.description}</p>
+          {canResolve && (
+            <div className="flex gap-sm">
+              <button 
+                onClick={() => handleResolve(true)} 
+                className="btn btn-success"
+                style={{ padding: '0.375rem 0.75rem', fontSize: '0.8rem' }}
+              >
+                Resolve YES
+              </button>
+              <button 
+                onClick={() => handleResolve(false)} 
+                className="btn btn-danger"
+                style={{ padding: '0.375rem 0.75rem', fontSize: '0.8rem' }}
+              >
+                Resolve NO
+              </button>
+            </div>
           )}
         </div>
-        {canResolve && (
-          <div className="flex gap-sm" style={{ marginLeft: '1rem' }}>
-            <button onClick={() => handleResolve(true)} className="btn btn-success btn-sm">
-              Resolve YES
-            </button>
-            <button onClick={() => handleResolve(false)} className="btn btn-danger btn-sm">
-              Resolve NO
-            </button>
-          </div>
+        <h1 style={{ fontSize: '1.5rem', lineHeight: 1.3 }}>{market.question}</h1>
+        {market.description && (
+          <p className="text-muted mt-sm" style={{ fontSize: '0.9rem' }}>{market.description}</p>
         )}
       </div>
 
