@@ -11,23 +11,22 @@ function PortfolioPage() {
   const [activeTab, setActiveTab] = useState('positions');
 
   useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      try {
+        const [positionsData, ordersData] = await Promise.all([
+          api.getPositions(),
+          api.getOrders('OPEN'),
+        ]);
+        setPositions(positionsData);
+        setOrders(ordersData);
+      } catch (err) {
+        console.error('Failed to load portfolio:', err);
+      }
+      setLoading(false);
+    };
     loadData();
   }, []);
-
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const [positionsData, ordersData] = await Promise.all([
-        api.getPositions(),
-        api.getOrders('OPEN'),
-      ]);
-      setPositions(positionsData);
-      setOrders(ordersData);
-    } catch (err) {
-      console.error('Failed to load portfolio:', err);
-    }
-    setLoading(false);
-  };
 
   const handleCancelOrder = async (orderId) => {
     try {

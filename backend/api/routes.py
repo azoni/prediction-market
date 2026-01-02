@@ -203,6 +203,11 @@ def get_market(market_id: str, db: Session = Depends(get_db)):
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
 
+    # Ensure market maker has liquidity on this market
+    if market.status == MarketStatus.OPEN:
+        for side in ["YES", "NO"]:
+            _refresh_market_maker_quotes(market_id, side, db)
+
     book_snapshot = matching_engine.get_book_snapshot(market_id)
 
     recent_trades = db.query(Trade).filter(
@@ -345,6 +350,9 @@ def place_order(
         order.status = OrderStatus.FILLED
     elif result.filled_quantity > 0:
         order.status = OrderStatus.PARTIAL
+    elif order_data.order_type == "MARKET":
+        # Market orders that don't fill should be cancelled, not left open
+        order.status = OrderStatus.CANCELLED
 
     db.commit()
 
@@ -501,20 +509,9 @@ def get_position(
 # =============================================================================
 
 @router.get("/leaderboard")
-def get_leaderboard(limit: int = 100, db: Session = Depends(get_db)):
-    """Get all users ranked by realized P&L."""
-    users = db.query(User).order_by(User.realized_pnl.desc()).limit(limit).all()
-    return [
-        {
-            "rank": i + 1,
-            "user_id": u.id,
-            "display_name": u.display_name,
-            "realized_pnl": round(u.realized_pnl, 2),
-            "total_trades": u.total_trades,
-            "balance": round(u.balance, 2),
-        }
-        for i, u in enumerate(users)
-    ]
+def leaderboard(limit: int = 10, db: Session = Depends(get_db)):
+    return get_leaderboard(db, limit)
+
 
 # =============================================================================
 # Rewards Endpoints
@@ -581,6 +578,7 @@ def get_reward_stats(
 # =============================================================================
 
 def _process_trade(db: Session, trade_result: TradeResult, current_user: User):
+    """Process a trade result: save trade, update positions, update balances."""
     trade = Trade(
         id=trade_result.trade_id,
         market_id=trade_result.market_id,
@@ -594,22 +592,24 @@ def _process_trade(db: Session, trade_result: TradeResult, current_user: User):
     )
     db.add(trade)
 
+    # Update positions (this function skips market maker internally)
+    process_trade_for_positions(
+        db, trade, trade_result.buyer_user_id, trade_result.seller_user_id
+    )
+
+    # Update buyer balance (deduct cost) - skip market maker
     if trade_result.buyer_user_id != MarketMakerBot.USER_ID:
-        process_trade_for_positions(
-            db, trade, trade_result.buyer_user_id, trade_result.seller_user_id
-        )
         buyer = db.query(User).filter(User.id == trade_result.buyer_user_id).first()
         if buyer:
             buyer.balance = round(buyer.balance - trade_result.total, 4)
 
+    # Update seller balance (add proceeds) - skip market maker
     if trade_result.seller_user_id != MarketMakerBot.USER_ID:
-        process_trade_for_positions(
-            db, trade, trade_result.buyer_user_id, trade_result.seller_user_id
-        )
         seller = db.query(User).filter(User.id == trade_result.seller_user_id).first()
         if seller:
             seller.balance = round(seller.balance + trade_result.total, 4)
 
+    # Notify market maker of trades it was involved in
     if trade_result.buyer_user_id == MarketMakerBot.USER_ID:
         market_maker.on_trade(
             trade_result.market_id, trade_result.side, "BUY", trade_result.quantity

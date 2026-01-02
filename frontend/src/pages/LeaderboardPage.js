@@ -8,18 +8,17 @@ function LeaderboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const loadLeaderboard = async () => {
+      try {
+        const data = await api.getLeaderboard(50);
+        setLeaderboard(data);
+      } catch (err) {
+        console.error('Failed to load leaderboard:', err);
+      }
+      setLoading(false);
+    };
     loadLeaderboard();
   }, []);
-
-  const loadLeaderboard = async () => {
-    try {
-      const data = await api.getLeaderboard(20);
-      setLeaderboard(data);
-    } catch (err) {
-      console.error('Failed to load leaderboard:', err);
-    }
-    setLoading(false);
-  };
 
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto' }}>
@@ -35,21 +34,24 @@ function LeaderboardPage() {
         </div>
       ) : (
         <div>
-          {leaderboard.map((entry, index) => (
+          {leaderboard.map((entry) => (
             <div
               key={entry.user_id}
               className={`leaderboard-row ${entry.user_id === user?.id ? 'card' : ''}`}
               style={entry.user_id === user?.id ? { borderColor: 'var(--accent-cyan)' } : {}}
             >
               <div className="leaderboard-rank">
-                {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}
+                {entry.rank === 1 ? '🥇' : entry.rank === 2 ? '🥈' : entry.rank === 3 ? '🥉' : `#${entry.rank}`}
               </div>
               <div className="leaderboard-name">
                 {entry.display_name}
                 {entry.user_id === user?.id && <span className="text-cyan"> (you)</span>}
               </div>
-              <div className={`leaderboard-pnl ${entry.total_pnl >= 0 ? 'text-green' : 'text-red'}`}>
-                {entry.total_pnl >= 0 ? '+' : ''}{entry.total_pnl.toFixed(2)} DC
+              <div className="leaderboard-stats">
+                <span className="text-green">{entry.balance.toFixed(0)} DC</span>
+                <span className="text-muted" style={{ fontSize: '0.75rem', marginLeft: '0.5rem' }}>
+                  {entry.total_trades} trades
+                </span>
               </div>
             </div>
           ))}

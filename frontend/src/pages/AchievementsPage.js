@@ -7,22 +7,21 @@ function AchievementsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [achievementsData, statsData] = await Promise.all([
+          api.getAchievements(),
+          api.getRewardStats(),
+        ]);
+        setAchievements(achievementsData);
+        setStats(statsData);
+      } catch (err) {
+        console.error('Failed to load achievements:', err);
+      }
+      setLoading(false);
+    };
     loadData();
   }, []);
-
-  const loadData = async () => {
-    try {
-      const [achievementsData, statsData] = await Promise.all([
-        api.getAchievements(),
-        api.getRewardStats(),
-      ]);
-      setAchievements(achievementsData);
-      setStats(statsData);
-    } catch (err) {
-      console.error('Failed to load achievements:', err);
-    }
-    setLoading(false);
-  };
 
   const earnedCount = achievements.filter(a => a.earned).length;
   const totalRewards = achievements.filter(a => a.earned).reduce((sum, a) => sum + a.reward, 0);

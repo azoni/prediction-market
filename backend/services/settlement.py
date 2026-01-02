@@ -145,26 +145,24 @@ def close_market(db: Session, market_id: str) -> int:
     return cancelled_count
 
 
-def get_leaderboard(db: Session, limit: int = 10) -> list[dict]:
-    results = db.query(
-        Position.user_id,
-        func.sum(Position.realized_pnl).label("total_pnl")
-    ).group_by(
-        Position.user_id
-    ).order_by(
-        func.sum(Position.realized_pnl).desc()
-    ).limit(limit).all()
-
+def get_leaderboard(db: Session, limit: int = 100) -> list[dict]:
+    """Get all users ranked by balance (includes signup bonus users)."""
+    users = db.query(User).order_by(User.balance.desc()).limit(limit).all()
+    
     leaderboard = []
-    for user_id, total_pnl in results:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            leaderboard.append({
-                "user_id": user_id,
-                "display_name": user.display_name,
-                "total_pnl": round(total_pnl or 0, 2),
-                "balance": round(user.balance, 2),
-            })
+    for i, user in enumerate(users):
+        # Calculate total realized PnL from all positions
+        positions = db.query(Position).filter(Position.user_id == user.id).all()
+        total_pnl = sum(p.realized_pnl for p in positions)
+        
+        leaderboard.append({
+            "rank": i + 1,
+            "user_id": user.id,
+            "display_name": user.display_name,
+            "total_pnl": round(total_pnl, 2),
+            "balance": round(user.balance, 2),
+            "total_trades": user.total_trades,
+        })
 
     return leaderboard
 
